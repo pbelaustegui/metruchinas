@@ -44,12 +44,12 @@ func TestFetchReturnsParsedIndicator(t *testing.T) {
 	if ind.VariationClass != "up-red" {
 		t.Errorf("VariationClass = %q, want %q", ind.VariationClass, "up-red")
 	}
-	wantDate := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+	wantDate := time.Date(2026, 9, 17, 0, 0, 0, 0, time.Local)
 	if !ind.Date.Equal(wantDate) {
 		t.Errorf("Date = %v, want %v", ind.Date, wantDate)
 	}
-	if ind.Date.Location() != time.UTC {
-		t.Errorf("Date location = %v, want UTC", ind.Date.Location())
+	if ind.Date.Location() != time.Local {
+		t.Errorf("Date location = %v, want %v", ind.Date.Location(), time.Local)
 	}
 }
 

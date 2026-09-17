@@ -57,7 +57,8 @@ type Indicator struct {
 	// used for UI coloring: "up-red", "down-green", ...
 	VariationClass string
 	// Date is the publication date ("fecha"). It is parsed from the
-	// DD-MM-YYYY layout and represented in UTC.
+	// DD-MM-YYYY layout and anchored to midnight in the system's local
+	// timezone, so it agrees with the clock the dashboard displays.
 	Date time.Time
 }
 
@@ -193,7 +194,8 @@ func parseFloatField(name, raw string) (float64, error) {
 	return v, nil
 }
 
-// parseDate parses the API date layout DD-MM-YYYY into a UTC time.Time.
+// parseDate parses the API date layout DD-MM-YYYY into midnight of that
+// calendar date in the system's local timezone.
 func parseDate(raw string) (time.Time, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -203,5 +205,9 @@ func parseDate(raw string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("riesgo: %w: invalid fecha value %q", ErrMalformed, raw)
 	}
-	return t, nil
+	// The payload carries a calendar date with no time and no zone. Re-anchor
+	// it to local midnight instead of converting the instant: converting would
+	// move a UTC-midnight value to the previous day west of Greenwich.
+	y, m, d := t.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.Local), nil
 }
