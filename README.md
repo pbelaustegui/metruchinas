@@ -44,6 +44,7 @@ go test -tags=integration ./internal/tui -run TestLiveSourcesFetchRealData -v
 - **Partial failures never blank the dashboard.** Each source reports its own error; if Ámbito is down, the USD rates stay on screen (and vice versa) with a red message in the failing section.
 - **Unpublished rates render as `—`.** The API may report `null` for a house; that is not shown as zero.
 - **Numbers are formatted es-AR**: dot thousands, comma decimals (`1.485,00`).
+- **Times use the system timezone.** No timezone is pinned in code: the footer clock and the country-risk date are rendered in the timezone of the machine running the app, so the same binary shows the wall clock of whatever host it runs on.
 - **One in-flight fetch at a time.** A tick or `r` while a fetch is running is ignored instead of stacking requests.
 
 ## Project layout
