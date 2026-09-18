@@ -58,6 +58,7 @@ type Model struct {
 	fetchQuotes QuotesFetcher
 	fetchRiesgo RiesgoFetcher
 	interval    time.Duration
+	timeout     time.Duration
 	loaded      bool
 }
 
@@ -67,6 +68,7 @@ func New() Model {
 		fetchQuotes: dolar.Fetch,
 		fetchRiesgo: riesgo.Fetch,
 		interval:    DefaultRefreshInterval,
+		timeout:     fetchTimeout,
 		refreshing:  true,
 	}
 }
@@ -124,17 +126,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // failing source never discards the other one's data.
 func (m Model) refresh() tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+		timeout := m.timeout
+		if timeout <= 0 {
+			timeout = fetchTimeout
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
 		msg := dataMsg{fetchedAt: time.Now()}
 		quotes, err := m.fetchQuotes(ctx)
+		if err == nil {
+			err = timeoutErr(ctx, "dolar", timeout)
+		}
 		if err != nil {
 			msg.quotesErr = err
 		} else {
 			msg.quotes = quotes
 		}
 		indicator, err := m.fetchRiesgo(ctx)
+		if err == nil {
+			err = timeoutErr(ctx, "riesgo", timeout)
+		}
 		if err != nil {
 			msg.riesgoErr = err
 		} else {
@@ -142,6 +154,17 @@ func (m Model) refresh() tea.Cmd {
 		}
 		return msg
 	}
+}
+
+// timeoutErr converts an expired refresh context into an explicit per-source
+// failure. Both clients run their request under this context, but a response
+// already buffered when the deadline passes can return without an error, so
+// the cycle reports the expiry instead of silently keeping stale data.
+func timeoutErr(ctx context.Context, source string, timeout time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("tui: %s refresh did not complete within %s: %w", source, timeout, err)
+	}
+	return nil
 }
 
 // View renders the dashboard.

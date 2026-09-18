@@ -269,6 +269,56 @@ func TestRefreshCommandStoresBothSourcesOnSuccess(t *testing.T) {
 	}
 }
 
+func TestRefreshReportsExplicitTimeoutForSlowSource(t *testing.T) {
+	slowRiesgo := func(ctx context.Context) (riesgo.Indicator, error) {
+		<-time.After(50 * time.Millisecond)
+		return riesgo.Indicator{Value: 515}, nil
+	}
+	m := newTestModel(okQuotes, slowRiesgo)
+	m.timeout = 10 * time.Millisecond
+
+	msg, ok := m.refresh()().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() command did not produce a dataMsg")
+	}
+	if msg.riesgoErr == nil {
+		t.Fatal("riesgoErr = nil, want an explicit timeout failure for the slow source")
+	}
+	if !errors.Is(msg.riesgoErr, context.DeadlineExceeded) {
+		t.Errorf("riesgoErr = %v, want it to wrap context.DeadlineExceeded", msg.riesgoErr)
+	}
+	// The source that finished inside the budget must still deliver.
+	if msg.quotesErr != nil {
+		t.Errorf("quotesErr = %v, want nil for the fast source", msg.quotesErr)
+	}
+	if len(msg.quotes) != 4 {
+		t.Errorf("len(quotes) = %d, want 4 to survive the other source timing out", len(msg.quotes))
+	}
+}
+
+func TestRefreshRejectsDataFromAnExpiredCycle(t *testing.T) {
+	ignoresContext := func(context.Context) ([]dolar.Quote, error) {
+		<-time.After(50 * time.Millisecond)
+		return []dolar.Quote{{Casa: "oficial", Nombre: "Oficial", Compra: rate(1485)}}, nil
+	}
+	m := newTestModel(ignoresContext, okRiesgo)
+	m.timeout = 10 * time.Millisecond
+
+	msg, ok := m.refresh()().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() command did not produce a dataMsg")
+	}
+	if msg.quotesErr == nil {
+		t.Fatal("quotesErr = nil, want the expired cycle reported instead of buffered data")
+	}
+	if !errors.Is(msg.quotesErr, context.DeadlineExceeded) {
+		t.Errorf("quotesErr = %v, want it to wrap context.DeadlineExceeded", msg.quotesErr)
+	}
+	if len(msg.quotes) != 0 {
+		t.Errorf("len(quotes) = %d, want 0: data from an expired cycle must not be accepted", len(msg.quotes))
+	}
+}
+
 func TestDisplayRowsFiltersAndOrdersHouses(t *testing.T) {
 	cases := []struct {
 		name   string
