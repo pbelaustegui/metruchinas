@@ -39,6 +39,7 @@ User wants a small Go TUI to consult public data without leaving the terminal.
 - [x] T-05: README (run/quit/indicators) + final full verification. — checks: `go test ./...`, `go build ./...` · commit `b87a115` · tier passive
 - [x] T-06: Post-close fix — anchor `internal/riesgo` date to the system timezone. — checks: `gofmt -l .` empty, build/vet exit 0, `go test -count=1 ./...` green under `TZ=UTC` and `TZ=America/Argentina/Buenos_Aires` · commit `c3d5428` (fix, medium/executable) + `5cbe370` (README note, passive)
 - [x] T-07: Close the top offline coverage gaps (client transport errors; `refresh()` success path and both failure-isolation directions; falling-index arrow). — checks: `gofmt -l .` empty, build/vet exit 0, `go test -count=1 ./...` green (also under `TZ=UTC`), coverage 87.9% → 90.2% · commit `332b293` · tier medium (`executable_change`, 163 líneas) → deferido al slice
+- [x] T-08: Add the root `.gitignore` (build output, `*.test`, `*.out`, `.atl/`, `.idea/`). — checks: `git check-ignore -v` on every pattern, `git status --porcelain` empty, `gentle-ai review assess` succeeds without an untracked-inventory declaration · commit `de4217c` · tier medium (`executable_change`)
 
 ## Acceptance criteria
 
@@ -67,4 +68,4 @@ User wants a small Go TUI to consult public data without leaving the terminal.
 ## Next step
 
 - Native review of slice 1 is blocked on the runtime (see Blockers); its frozen transaction stays open for capture from a runtime that can dispatch reviewer subagents. Slice 2 (TUI) review boundary is `7821b22`.
-- Operational note for the review tooling: untracked now includes an IDE-generated `.idea/` directory (not created by the agent). The repository has no root `.gitignore`. Current eligible untracked inventory: `sha256:1564f50593a84f2e05b0bcb19b54110accc0cabb16c98679ef90c175af768490` (it had been `sha256:4425697ab74255760bb7c3b87dc13642263a59d4b65cc516abaa19765c94da71` for `.atl/` alone).
+- Operational note for the review tooling: the IDE-generated `.idea/` directory (not created by the agent) and the machine-local `.atl/` are now ignored by the root `.gitignore` added in `de4217c` (`chore: ignore local build output and editor state`), together with `/metruchinas`, `*.test`, and `*.out`. Verified effect: `git status --porcelain` is empty after that commit and `gentle-ai review assess --cwd . --base-ref <prev> --committed-only --json` succeeds **without** the untracked-inventory declaration that earlier runs required (the hashes involved were `sha256:1564f505...` with `.idea/` present and `sha256:4425697...` for `.atl/` alone).
