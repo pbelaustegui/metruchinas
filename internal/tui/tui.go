@@ -310,13 +310,14 @@ func formatNumber(v float64, decimals int) string {
 	return out
 }
 
-// padRight pads s with spaces to at least width display cells. It is a
-// byte-length approximation, good enough for the short Latin labels used here.
+// padRight pads s with spaces to at least width display cells. It measures
+// display width, not bytes, so accented labels ("liquidación") line up with
+// plain ones; a byte count would over-pad them by one cell per multibyte rune.
 func padRight(s string, width int) string {
-	if len(s) >= width {
-		return s
+	if w := lipgloss.Width(s); w < width {
+		return s + strings.Repeat(" ", width-w)
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s
 }
 
 func tickCmd(d time.Duration) tea.Cmd {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/riesgo"
@@ -461,5 +462,39 @@ func TestViewShowsDownArrowForFallingIndex(t *testing.T) {
 	}
 	if strings.Contains(view, "▲") {
 		t.Errorf("View() shows the rising arrow for a negative variation:\n%s", view)
+	}
+}
+
+func TestPadRightMeasuresDisplayCellsNotBytes(t *testing.T) {
+	// "liquidación" carries a multibyte rune, so a byte count undershoots the
+	// padding and shifts everything after it one cell to the left.
+	const accented = "Contado con liquidación"
+	if got := lipgloss.Width(padRight(accented, 26)); got != 26 {
+		t.Errorf("padRight(%q, 26) is %d cells wide, want 26", accented, got)
+	}
+}
+
+func TestRenderQuotesAlignsRateColumnsAcrossLabels(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	m.quotes = quotes
+
+	lines := strings.Split(m.renderQuotes(), "\n")
+	if len(lines) != len(displayedHouses) {
+		t.Fatalf("renderQuotes() returned %d lines, want %d", len(lines), len(displayedHouses))
+	}
+
+	// Every rate separator must start at the same display column, whatever the
+	// label length. The prefix carries SGR codes, which Width ignores.
+	sep := " / "
+	want := lipgloss.Width(lines[0][:strings.Index(lines[0], sep)])
+	for _, line := range lines {
+		i := strings.Index(line, sep)
+		if i < 0 {
+			t.Fatalf("renderQuotes() line %q has no rate separator", line)
+		}
+		if got := lipgloss.Width(line[:i]); got != want {
+			t.Errorf("rate column starts at cell %d, want %d, in line %q", got, want, line)
+		}
 	}
 }
