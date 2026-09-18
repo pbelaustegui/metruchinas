@@ -193,24 +193,79 @@ func TestUpdateKeepsPerSourceFailuresIsolated(t *testing.T) {
 }
 
 func TestRefreshCommandReportsPerSourceErrors(t *testing.T) {
-	boom := errors.New("quote source down")
-	m := newTestModel(
-		func(context.Context) ([]dolar.Quote, error) { return nil, boom },
-		okRiesgo,
-	)
+	boom := errors.New("source down")
+	boomQuotes := func(context.Context) ([]dolar.Quote, error) { return nil, boom }
+	boomRiesgo := func(context.Context) (riesgo.Indicator, error) { return riesgo.Indicator{}, boom }
+
+	cases := []struct {
+		name          string
+		quotes        QuotesFetcher
+		riesgo        RiesgoFetcher
+		wantQuotesErr bool
+		wantRiesgoErr bool
+	}{
+		{"quotes fail, riesgo survives", boomQuotes, okRiesgo, true, false},
+		{"riesgo fails, quotes survive", okQuotes, boomRiesgo, false, true},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(tt.quotes, tt.riesgo)
+
+			msg, ok := m.refresh()().(dataMsg)
+			if !ok {
+				t.Fatal("refresh() command did not produce a dataMsg")
+			}
+			if got := errors.Is(msg.quotesErr, boom); got != tt.wantQuotesErr {
+				t.Errorf("quotesErr = %v, want a failure = %v", msg.quotesErr, tt.wantQuotesErr)
+			}
+			if got := errors.Is(msg.riesgoErr, boom); got != tt.wantRiesgoErr {
+				t.Errorf("riesgoErr = %v, want a failure = %v", msg.riesgoErr, tt.wantRiesgoErr)
+			}
+			// The healthy source must still carry its data in the same cycle.
+			if !tt.wantQuotesErr && len(msg.quotes) == 0 {
+				t.Error("quotes were dropped although that source was healthy")
+			}
+			if !tt.wantRiesgoErr && msg.riesgo.Value != 515 {
+				t.Errorf("riesgo.Value = %v, want 515 from the healthy source", msg.riesgo.Value)
+			}
+			if msg.fetchedAt.IsZero() {
+				t.Error("fetchedAt is zero, want the cycle timestamp")
+			}
+		})
+	}
+}
+
+func TestRefreshCommandStoresBothSourcesOnSuccess(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
 
 	msg, ok := m.refresh()().(dataMsg)
 	if !ok {
 		t.Fatal("refresh() command did not produce a dataMsg")
 	}
-	if !errors.Is(msg.quotesErr, boom) {
-		t.Errorf("quotesErr = %v, want %v", msg.quotesErr, boom)
+	if msg.quotesErr != nil {
+		t.Errorf("quotesErr = %v, want nil on a healthy source", msg.quotesErr)
+	}
+	if msg.riesgoErr != nil {
+		t.Errorf("riesgoErr = %v, want nil on a healthy source", msg.riesgoErr)
+	}
+	if len(msg.quotes) != 4 {
+		t.Errorf("len(quotes) = %d, want 4", len(msg.quotes))
 	}
 	if msg.riesgo.Value != 515 {
-		t.Errorf("riesgo.Value = %v, want 515 to still be fetched", msg.riesgo.Value)
+		t.Errorf("riesgo.Value = %v, want 515", msg.riesgo.Value)
 	}
 	if msg.fetchedAt.IsZero() {
 		t.Error("fetchedAt is zero, want the cycle timestamp")
+	}
+
+	// The successful message must round-trip through Update into live data.
+	updated, _ := m.Update(msg)
+	view := updated.(Model).View()
+	for _, want := range []string{"Oficial", "1.485,00", "515"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() after a successful refresh missing %q", want)
+		}
 	}
 }
 
@@ -337,4 +392,24 @@ func TestViewRendersDataHintsAndPerSourceErrors(t *testing.T) {
 			t.Error("View() dropped the dolar section while the other source failed")
 		}
 	})
+}
+
+func TestViewShowsDownArrowForFallingIndex(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	falling := riesgo.Indicator{
+		Value:          505,
+		Variation:      -1.25,
+		VariationClass: "down-green",
+		Date:           time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC),
+	}
+	updated, _ := m.Update(dataMsg{quotes: quotes, riesgo: falling, fetchedAt: time.Now()})
+	view := updated.(Model).View()
+
+	if !strings.Contains(view, "▼ -1,25%") {
+		t.Errorf("View() missing the falling-index arrow and signed variation:\n%s", view)
+	}
+	if strings.Contains(view, "▲") {
+		t.Errorf("View() shows the rising arrow for a negative variation:\n%s", view)
+	}
 }

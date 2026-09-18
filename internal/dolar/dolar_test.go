@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,6 +112,41 @@ func TestFetchFailsOnNon200Status(t *testing.T) {
 	}
 	if httpErr.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("HTTPError.StatusCode = %d, want %d", httpErr.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+// errorRoundTripper fails every request, standing in for a dead connection
+// (DNS failure, refused connection) without touching the network.
+type errorRoundTripper struct{ err error }
+
+func (rt errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, rt.err
+}
+
+func TestFetchFailsOnTransportError(t *testing.T) {
+	boom := errors.New("dial tcp 127.0.0.1:1: connect: connection refused")
+	c := &Client{
+		BaseURL:    defaultBaseURL,
+		HTTPClient: &http.Client{Transport: errorRoundTripper{err: boom}},
+	}
+
+	_, err := c.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("Fetch() error = nil, want the transport failure surfaced")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("Fetch() error = %v, want it to wrap %v", err, boom)
+	}
+	if !strings.Contains(err.Error(), "dolar: request:") {
+		t.Errorf("Fetch() error = %v, want the request stage named", err)
+	}
+	// A dead connection must not be reported as a payload or status problem.
+	if errors.Is(err, ErrMalformed) {
+		t.Errorf("Fetch() error = %v, want a transport failure, not ErrMalformed", err)
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		t.Errorf("Fetch() error = %v, want a transport failure, not *HTTPError", err)
 	}
 }
 
