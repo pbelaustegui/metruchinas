@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/riesgo"
 )
@@ -22,6 +23,9 @@ func newTestModel(quotes QuotesFetcher, r RiesgoFetcher) Model {
 	m := New()
 	m.fetchQuotes = quotes
 	m.fetchRiesgo = r
+	m.fetchBonds = func(ctx context.Context) ([]bonos.BondQuote, error) {
+		return nil, nil
+	}
 	m.refreshing = false
 	return m
 }
@@ -42,6 +46,13 @@ func okRiesgo(context.Context) (riesgo.Indicator, error) {
 		VariationClass: "up-red",
 		Date:           time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC),
 	}, nil
+}
+
+func okBonds() []bonos.BondQuote {
+	return []bonos.BondQuote{
+		{Ticker: "GD30", Ultimo: 67550.0, Variacion: -2.86, Cierre: 69540.0},
+		{Ticker: "GD29", Ultimo: 85000.0, Variacion: 1.50, Cierre: 83750.0},
+	}
 }
 
 func TestUpdateQuitsOnQuitKeys(t *testing.T) {
@@ -496,5 +507,109 @@ func TestRenderQuotesAlignsRateColumnsAcrossLabels(t *testing.T) {
 		if got := lipgloss.Width(line[:i]); got != want {
 			t.Errorf("rate column starts at cell %d, want %d, in line %q", got, want, line)
 		}
+	}
+}
+
+func TestUpdateStoresBondData(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	ind, _ := okRiesgo(context.Background())
+	updated, _ := m.Update(dataMsg{
+		quotes:    quotes,
+		riesgo:    ind,
+		bonds:     okBonds(),
+		fetchedAt: time.Now(),
+	})
+	model := updated.(Model)
+	if len(model.bonds) != 2 {
+		t.Errorf("expected 2 bonds, got %d", len(model.bonds))
+	}
+}
+
+func TestUpdateKeepsBondFailureIsolated(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	ind, _ := okRiesgo(context.Background())
+	bondErr := errors.New("bond fetch failed")
+	updated, _ := m.Update(dataMsg{
+		quotes:    quotes,
+		riesgo:    ind,
+		bondsErr:  bondErr,
+		fetchedAt: time.Now(),
+	})
+	model := updated.(Model)
+	if model.quotesErr != nil {
+		t.Error("quotes should be unaffected by bond failure")
+	}
+	if model.riesgoErr != nil {
+		t.Error("riesgo should be unaffected by bond failure")
+	}
+	if model.bondsErr == nil {
+		t.Error("bondsErr should be set")
+	}
+}
+
+func TestRefreshCommandFetchesBonds(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.fetchBonds = func(ctx context.Context) ([]bonos.BondQuote, error) {
+		return okBonds(), nil
+	}
+	cmd := m.refresh()
+	msg := cmd().(dataMsg)
+	if len(msg.bonds) != 2 {
+		t.Errorf("expected 2 bonds in refresh result, got %d", len(msg.bonds))
+	}
+}
+
+func TestViewRendersBondsSection(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.loaded = true
+	m.bonds = okBonds()
+	// Set CCL venta so USD prices can be computed.
+	cclRate := 1200.0
+	m.cclVenta = &cclRate
+	view := m.View()
+	if !strings.Contains(view, "Bonos soberanos") {
+		t.Error("view should contain bonds section header")
+	}
+	if !strings.Contains(view, "GD30") {
+		t.Error("view should contain GD30 ticker")
+	}
+}
+
+func TestViewRendersBondError(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.loaded = true
+	m.bonds = []bonos.BondQuote{
+		{Ticker: "GD30", Err: errors.New("test error")},
+		{Ticker: "GD29", Ultimo: 85000.0, Variacion: 1.50, Cierre: 83750.0},
+	}
+	cclRate := 1200.0
+	m.cclVenta = &cclRate
+	view := m.View()
+	if !strings.Contains(view, "GD30") {
+		t.Error("view should show GD30 even with error")
+	}
+	if !strings.Contains(view, "GD29") {
+		t.Error("view should show GD29 with data")
+	}
+}
+
+func TestCCLVentaExtractedFromQuotes(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	ind, _ := okRiesgo(context.Background())
+	updated, _ := m.Update(dataMsg{
+		quotes:    quotes,
+		riesgo:    ind,
+		fetchedAt: time.Now(),
+	})
+	model := updated.(Model)
+	if model.cclVenta == nil {
+		t.Fatal("cclVenta should be extracted from CCL quote")
+	}
+	// okQuotes() has contadoconliqui with venta pointer; check it's non-zero.
+	if *model.cclVenta <= 0 {
+		t.Errorf("cclVenta should be positive, got %f", *model.cclVenta)
 	}
 }

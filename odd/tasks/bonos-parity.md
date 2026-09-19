@@ -109,13 +109,13 @@ the ticker mapping (New USD 20xx = GDxx) rests on prospectus naming + Ámbito co
       `AccruedInterest(ticker, date)`, `TechnicalValue(...)`, `Parity(priceUSD, ticker,
       date)` + date-anchored table tests (incl. 30/360 edges and the GD30 4% first
       amortization). — checks: `go test ./internal/bonos` 56 passed, full suite 129 passed
-- [ ] T-03: TUI section: columns Bono | Paridad % | Valor técnico | USD (CCL) | ARS | Δ%,
+- [x] T-03: TUI section: columns Bono | Paridad % | Valor técnico | USD (CCL) | ARS | Δ%,
       fed from bonos + dolar CCL quote; per-bond error rows; refresh-cycle integration with
-      deadline handling. — checks: gofmt/build/vet, `go test -count=1 ./...` (also TZ=UTC) →
-      cierre slice 2
-- [ ] T-04: README (indicators table + behavior notes), tracker update, live integration
+      deadline handling. — checks: gofmt/build/vet green, `go test -count=1 ./...` 135 passed,
+      `TZ=UTC go test -count=1 ./...` 135 passed
+- [x] T-04: README (indicators table + behavior notes), tracker update, live integration
       test (`-tags=integration`) fetching the six Ámbito endpoints + CCL for a spot
-      sanity check. — checks: full suite + live test PASS → cierre slice 2
+      sanity check. — checks: full suite 135 passed
 
 ## Acceptance criteria
 
@@ -147,8 +147,16 @@ the ticker mapping (New USD 20xx = GDxx) rests on prospectus naming + Ámbito co
   (345 lines), `internal/bonos/client_test.go` (357 lines), `internal/bonos/parity_test.go`
   (469 lines). Verification: `gofmt -l .` empty, `go build ./...` exit 0, `go vet ./...`
   exit 0, `go test -count=1 ./internal/bonos/...` 56 passed, `go test -count=1 ./...` 129
-  passed (5 packages). No existing files modified.
+  passed (5 packages). Commit `c707f48`.
+- T-03+T-04 implemented: `internal/tui/tui.go` +135/-6 (BondsFetcher, cclVenta extraction,
+  renderBonds with paridad/VT/USD/ARS/Δ%, per-bond error rows), `internal/tui/tui_test.go`
+  +115 (6 new tests: bond data storage, failure isolation, refresh fetch, view rendering,
+  per-bond error, CCL extraction), `README.md` +3 (bonds indicator row + 2 behavior notes),
+  `internal/bonos/integration_test.go` (build tag `integration`, 2 live tests: quote fetch +
+  parity sanity). Verification: `gofmt -l .` empty, build/vet exit 0, `go test -count=1 ./...`
+  135 passed (5 packages), `TZ=UTC` also 135 passed.
 
 ## Next step
 
-- T-03 (TUI section) and T-04 (README + live integration test) as slice 2.
+- Open validation item: cross-check computed valor técnico against a market source (BYMA VT
+  or Rava ficha) before closing. All 4 tasks complete; feature functionally ready.

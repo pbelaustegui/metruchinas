@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/riesgo"
 )
@@ -28,11 +29,17 @@ const fetchTimeout = 25 * time.Second
 // dashboard, from the most referenced to the least.
 var displayedHouses = []string{"oficial", "blue", "bolsa", "contadoconliqui"}
 
+// bondTickers is the list of sovereign bonds shown by the dashboard.
+var bondTickers = []string{"GD29", "GD30", "GD35", "GD38", "GD41", "GD46"}
+
 // QuotesFetcher retrieves the USD quotes. It matches dolar.Fetch.
 type QuotesFetcher func(ctx context.Context) ([]dolar.Quote, error)
 
 // RiesgoFetcher retrieves the country-risk indicator. It matches riesgo.Fetch.
 type RiesgoFetcher func(ctx context.Context) (riesgo.Indicator, error)
+
+// BondsFetcher retrieves the GD bond quotes. It matches a closure wrapping bonos.Client.Fetch.
+type BondsFetcher func(ctx context.Context) ([]bonos.BondQuote, error)
 
 // dataMsg carries the outcome of one refresh cycle. Each source reports its
 // own error so a failing source never hides the other one's data.
@@ -41,6 +48,8 @@ type dataMsg struct {
 	quotesErr error
 	riesgo    riesgo.Indicator
 	riesgoErr error
+	bonds     []bonos.BondQuote
+	bondsErr  error
 	fetchedAt time.Time
 }
 
@@ -53,23 +62,33 @@ type Model struct {
 	quotesErr   error
 	riesgo      riesgo.Indicator
 	riesgoErr   error
+	bonds       []bonos.BondQuote
+	bondsErr    error
 	fetchedAt   time.Time
 	refreshing  bool
 	fetchQuotes QuotesFetcher
 	fetchRiesgo RiesgoFetcher
+	fetchBonds  BondsFetcher
 	interval    time.Duration
 	timeout     time.Duration
 	loaded      bool
+	cclVenta    *float64
 }
 
 // New returns a Model wired to the real public APIs.
 func New() Model {
+	dc := dolar.NewClient()
+	rc := riesgo.NewClient()
+	bc := bonos.NewClient()
 	return Model{
-		fetchQuotes: dolar.Fetch,
-		fetchRiesgo: riesgo.Fetch,
-		interval:    DefaultRefreshInterval,
-		timeout:     fetchTimeout,
-		refreshing:  true,
+		fetchQuotes: dc.Fetch,
+		fetchRiesgo: rc.Fetch,
+		fetchBonds: func(ctx context.Context) ([]bonos.BondQuote, error) {
+			return bc.Fetch(ctx, bondTickers...)
+		},
+		interval:   DefaultRefreshInterval,
+		timeout:    fetchTimeout,
+		refreshing: true,
 	}
 }
 
@@ -117,12 +136,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.riesgo, m.riesgoErr = msg.riesgo, nil
 		}
+		if msg.bondsErr != nil {
+			m.bondsErr = msg.bondsErr
+		} else {
+			m.bonds, m.bondsErr = msg.bonds, nil
+		}
+		// Extract CCL sell rate for USD bond price conversion.
+		m.cclVenta = nil
+		if m.quotesErr == nil {
+			for _, q := range m.quotes {
+				if q.Casa == "contadoconliqui" && q.Venta != nil {
+					v := *q.Venta
+					m.cclVenta = &v
+					break
+				}
+			}
+		}
 		return m, nil
 	}
 	return m, nil
 }
 
-// refresh fetches both sources and reports them in a single message, so one
+// refresh fetches all sources and reports them in a single message, so one
 // failing source never discards the other one's data.
 func (m Model) refresh() tea.Cmd {
 	return func() tea.Msg {
@@ -152,6 +187,15 @@ func (m Model) refresh() tea.Cmd {
 		} else {
 			msg.riesgo = indicator
 		}
+		bondQuotes, err := m.fetchBonds(ctx)
+		if err == nil {
+			err = timeoutErr(ctx, "bonos", timeout)
+		}
+		if err != nil {
+			msg.bondsErr = err
+		} else {
+			msg.bonds = bondQuotes
+		}
 		return msg
 	}
 }
@@ -180,6 +224,8 @@ func (m Model) View() string {
 	b.WriteString(sectionStyle.Render("Riesgo país (EMBI Argentina)"))
 	b.WriteString("\n")
 	b.WriteString(m.renderRiesgo())
+	b.WriteString("\n\n")
+	b.WriteString(m.renderBonds())
 	b.WriteString("\n\n")
 	b.WriteString(m.renderFooter())
 	b.WriteString("\n")
@@ -235,6 +281,83 @@ func (m Model) renderRiesgo() string {
 	b.WriteString("  ")
 	b.WriteString(style.Render(fmt.Sprintf("%s %s%%", arrow, formatNumber(m.riesgo.Variation, 2))))
 	b.WriteString(mutedStyle.Render(fmt.Sprintf("   (%s)", m.riesgo.Date.Format("02-01-2006"))))
+	return b.String()
+}
+
+// renderBonds renders the sovereign bonds section with parity %.
+func (m Model) renderBonds() string {
+	var b strings.Builder
+	b.WriteString(sectionStyle.Render("Bonos soberanos GD (paridad)"))
+	b.WriteByte('\n')
+
+	if m.bondsErr != nil {
+		b.WriteString(errorStyle.Render("  " + m.bondsErr.Error()))
+		b.WriteByte('\n')
+		return b.String()
+	}
+	if len(m.bonds) == 0 {
+		return b.String()
+	}
+
+	now := time.Now()
+	for _, bq := range m.bonds {
+		if bq.Err != nil {
+			b.WriteString(fmt.Sprintf("  %s  %s\n",
+				labelStyle.Render(padRight(bq.Ticker, 6)),
+				errorStyle.Render(bq.Err.Error())))
+			continue
+		}
+
+		// Compute USD price via CCL division.
+		var priceUSD float64
+		var usdStr string
+		if m.cclVenta != nil && *m.cclVenta > 0 {
+			priceUSD = bq.Ultimo / *m.cclVenta
+			usdStr = formatNumber(priceUSD, 2)
+		} else {
+			usdStr = "—"
+		}
+
+		// Compute parity.
+		var parityStr string
+		if priceUSD > 0 {
+			parity, err := bonos.Parity(priceUSD, bq.Ticker, now)
+			if err == nil {
+				parityStr = fmt.Sprintf("%.1f%%", parity)
+			} else {
+				parityStr = "—"
+			}
+		} else {
+			parityStr = "—"
+		}
+
+		// Compute technical value.
+		var tvStr string
+		tv, err := bonos.TechnicalValue(bq.Ticker, now)
+		if err == nil {
+			tvStr = formatNumber(tv, 2)
+		} else {
+			tvStr = "—"
+		}
+
+		// Variation arrow.
+		var varStr string
+		if bq.Variacion > 0 {
+			varStr = upStyle.Render(fmt.Sprintf("▲ %.2f%%", bq.Variacion))
+		} else if bq.Variacion < 0 {
+			varStr = downStyle.Render(fmt.Sprintf("▼ %.2f%%", bq.Variacion))
+		} else {
+			varStr = mutedStyle.Render(fmt.Sprintf("  %.2f%%", bq.Variacion))
+		}
+
+		b.WriteString(fmt.Sprintf("  %s  %s  %s  %s  %s  %s\n",
+			labelStyle.Render(padRight(bq.Ticker, 6)),
+			rateStyle.Render(padRight("P:"+parityStr, 12)),
+			mutedStyle.Render(padRight("VT:"+tvStr, 12)),
+			rateStyle.Render(padRight("USD "+usdStr, 12)),
+			mutedStyle.Render(padRight("ARS "+formatNumber(bq.Ultimo, 0), 14)),
+			varStr))
+	}
 	return b.String()
 }
 
