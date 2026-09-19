@@ -11,6 +11,7 @@ Argentine macroeconomic indicators in your terminal: USD/ARS quotes and the coun
 | Dólar MEP (bolsa) | Buy / sell rate | dolarapi.com |
 | Dólar CCL (contado con liquidación) | Buy / sell rate | dolarapi.com |
 | Riesgo país | EMBI Argentina index + daily variation | [mercados.ambito.com](https://mercados.ambito.com) |
+| Bonos soberanos GD (paridad) | GD29, GD30, GD35, GD38, GD41, GD46 with parity %, technical value, and USD price via CCL conversion | mercados.ambito.com/bono/{TICKER}/variacion |
 
 Both sources are public and need no API key.
 
@@ -46,6 +47,8 @@ go test -tags=integration ./internal/tui -run TestLiveSourcesFetchRealData -v
 - **Numbers are formatted es-AR**: dot thousands, comma decimals (`1.485,00`).
 - **Times use the system timezone.** No timezone is pinned in code: the footer clock and the country-risk date are rendered in the timezone of the machine running the app, so the same binary shows the wall clock of whatever host it runs on.
 - **One in-flight fetch at a time.** A tick or `r` while a fetch is running is ignored instead of stacking requests.
+- **Paridad is market-price (USD) / technical-value × 100.** USD price is approximated as ARS-price ÷ CCL-venta (no keyless USD-leg source exists).
+- **Technical value (valor técnico) = residual capital + accrued interest,** computed from the SEC 424B5 prospectus terms (30/360 day count).
 
 ## Project layout
 
