@@ -1,0 +1,8 @@
+# Local build output
+/metruchinas
+*.test
+*.out
+
+# Generated tooling state (embeds local absolute paths) and editor metadata
+/.atl/
+/.idea/
