@@ -101,15 +101,14 @@ the ticker mapping (New USD 20xx = GDxx) rests on prospectus naming + Ámbito co
 
 ## Task checklist
 
-- [ ] T-01: `internal/bonos` Ámbito client: `Fetch(ctx, tickers...)`, per-ticker
+- [x] T-01: `internal/bonos` Ámbito client: `Fetch(ctx, tickers...)`, per-ticker
       `BondQuote{Ticker, Ultimo, Variacion, Cierre, ...}` (comma decimals), `ErrMalformed`,
       `HTTPError`, browser-like User-Agent, table-driven httptest suite. — checks: `go test
-      ./internal/bonos`, gofmt/build/vet → cierre slice 1
-- [ ] T-02: contractual static tables + pure functions `ResidualCapital(ticker, date)`,
+      ./internal/bonos` 56 passed, gofmt/build/vet green
+- [x] T-02: contractual static tables + pure functions `ResidualCapital(ticker, date)`,
       `AccruedInterest(ticker, date)`, `TechnicalValue(...)`, `Parity(priceUSD, ticker,
       date)` + date-anchored table tests (incl. 30/360 edges and the GD30 4% first
-      amortization). — checks: `go test ./internal/bonos` (or `./internal/valor`) → cierre
-      slice 1
+      amortization). — checks: `go test ./internal/bonos` 56 passed, full suite 129 passed
 - [ ] T-03: TUI section: columns Bono | Paridad % | Valor técnico | USD (CCL) | ARS | Δ%,
       fed from bonos + dolar CCL quote; per-bond error rows; refresh-cycle integration with
       deadline handling. — checks: gofmt/build/vet, `go test -count=1 ./...` (also TZ=UTC) →
@@ -136,7 +135,7 @@ the ticker mapping (New USD 20xx = GDxx) rests on prospectus naming + Ámbito co
 
 ## Progress / verification evidence
 
-- Branch `feat/bonos-parity` (pending creation at plan approval).
+- Branch `feat/bonos-parity` created from `master` after PR #1 merge.
 - Source recon (2026-09-19, live): Ámbito `/bono/{GD29,GD30,GD35,GD38,GD41,GD46}` all
   return quotes (GD30 sample: ultimo "67550,00", variacion "-2,86", cierre "69540,000");
   GD30D/AL30D/AL family → "Datos inexistentes"; BYMA open API → HTTP 401; TradingView
@@ -144,8 +143,12 @@ the ticker mapping (New USD 20xx = GDxx) rests on prospectus naming + Ámbito co
   failure; IOL/Cronista → no public endpoint. dolarapi CCL already integrated in app.
 - Contractual terms extracted from the SEC 424B5 (see Evidence) — full coupon step-ups,
   amortization installment dates, 30/360 basis, and the 2030s' ÷25 first payment rule.
+- T-01+T-02 implemented: `internal/bonos/client.go` (234 lines), `internal/bonos/parity.go`
+  (345 lines), `internal/bonos/client_test.go` (357 lines), `internal/bonos/parity_test.go`
+  (469 lines). Verification: `gofmt -l .` empty, `go build ./...` exit 0, `go vet ./...`
+  exit 0, `go test -count=1 ./internal/bonos/...` 56 passed, `go test -count=1 ./...` 129
+  passed (5 packages). No existing files modified.
 
 ## Next step
 
-- Await plan approval, then create branch + T-01 (client) and T-02 (tables/math) as slice
-  1 with a single review closure, mirroring the macro-tui slice pattern.
+- T-03 (TUI section) and T-04 (README + live integration test) as slice 2.

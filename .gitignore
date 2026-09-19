@@ -6,3 +6,5 @@
 # Generated tooling state (embeds local absolute paths) and editor metadata
 /.atl/
 /.idea/
+# Local Pi runtime state
+.atl/
