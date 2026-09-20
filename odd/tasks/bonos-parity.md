@@ -158,5 +158,11 @@ the ticker mapping (New USD 20xx = GDxx) rests on prospectus naming + Ámbito co
 
 ## Next step
 
-- Open validation item: cross-check computed valor técnico against a market source (BYMA VT
-  or Rava ficha) before closing. All 4 tasks complete; feature functionally ready.
+- VT market cross-check CLOSED (2026-09-20): `TechnicalValue` output for all six bonds
+  matches market-published valor técnico within rounding / same-day cache skew. Computed
+  (30/360, VR + IC): GD29 60.118 / GD30 64.095 / GD35 100.814 / GD38 100.986 / GD41 100.690 /
+  GD46 91.649. Market: Eco Valores publishes GD29 60.12, GD30 64.10, GD35 100.83,
+  GD38 101.01, GD41 ~100.5-100.7 (cache skew), GD46 91.66; Puente GD38 101.00 (IC 1.00);
+  Allaria residual schedules match (GD29 60%, GD30 64%, GD46 90.91% after 2026-07-09);
+  Portfolio Personal informe 18-Sep-2026 residuals column matches. Residuals are exact on
+  every source; IC differences are ≤0.02 (one accrual day or rounding). Feature ready to close.
