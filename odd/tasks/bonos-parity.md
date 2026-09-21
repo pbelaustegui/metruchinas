@@ -95,9 +95,10 @@ Per series (coupon step-ups: [from-date, rate] pairs; amortization installments)
 | GD41 | 2041-07-09 | 0.125% →2021-07-09; 2.500% →2022-07-09; 3.500% →2029-07-09; 4.875% to maturity | 28 × (100/28): 2028-01-09 → 2041-07-09 |
 | GD46 | 2046-07-09 | 0.125% →2021-07-09; 1.125% →2022-07-09; 1.500% →2023-07-09; 3.625% →2024-07-09; 4.125% →2027-07-09; 4.375% →2028-07-09; 5.000% to maturity | 44 × (100/44): 2025-01-09 → 2046-07-09 |
 
-Open validation item: cross-check the computed valor técnico against a market source
-(BYMA valor técnico or Rava ficha) before closing slice 2. The SEC document is primary but
-the ticker mapping (New USD 20xx = GDxx) rests on prospectus naming + Ámbito coverage.
+Open validation item — CLOSED 2026-09-20: computed valor técnico cross-checked against
+market-published VT (Eco Valores, Puente, Allaria, Portfolio Personal); see
+"Progress / verification evidence" and "Next step" below. The SEC document is primary;
+the ticker mapping (New USD 20xx = GDxx) holds on both sources.
 
 ## Task checklist
 
@@ -158,5 +159,21 @@ the ticker mapping (New USD 20xx = GDxx) rests on prospectus naming + Ámbito co
 
 ## Next step
 
-- Open validation item: cross-check computed valor técnico against a market source (BYMA VT
-  or Rava ficha) before closing. All 4 tasks complete; feature functionally ready.
+- **Feature CLOSED (2026-09-20).** T-01..T-04 all `[x]`, all four acceptance criteria hold
+  with recorded evidence, no active blockers.
+- VT market cross-check (2026-09-20): `TechnicalValue` output for all six bonds
+  matches market-published valor técnico within rounding / same-day cache skew. Computed
+  (30/360, VR + IC): GD29 60.118 / GD30 64.095 / GD35 100.814 / GD38 100.986 / GD41 100.690 /
+  GD46 91.649. Market: Eco Valores publishes GD29 60.12, GD30 64.10, GD35 100.83,
+  GD38 101.01, GD41 ~100.5-100.7 (cache skew), GD46 91.66; Puente GD38 101.00 (IC 1.00);
+  Allaria residual schedules match (GD29 60%, GD30 64%, GD46 90.91% after 2026-07-09);
+  Portfolio Personal informe 18-Sep-2026 residuals column matches. Residuals are exact on
+  every source; IC differences are ≤0.02 (one accrual day or rounding).
+- Review status: **no native Gentle AI review was run for this feature** — the user
+  explicitly left these candidates unreviewed and closed the tracker anyway. D-07
+  ("reviews per slice as in macro-tui") was NOT executed; recorded here as a deliberate
+  deviation, do not treat the commits as reviewed. Delivery stays as local work-unit
+  commits on `feat/bonos-parity` (no remote configured).
+- Remaining open work: none. Advisory/coverage follow-ups: none recorded (no review ran).
+- Final commits: `c92835d` (plan of record) → `c707f48` (client + parity) →
+  `44d9ce0` (TUI section + tests + README) → `918f48d` (VT cross-check evidence).
