@@ -57,8 +57,10 @@ go test -tags=integration ./internal/tui -run TestLiveSourcesFetchRealData -v
 | `main.go` | Bubbletea program wiring |
 | `internal/dolar` | dolarapi.com client (fetch + parse + typed errors) |
 | `internal/riesgo` | Ámbito country-risk client (comma decimals, DD-MM-YYYY dates) |
+| `internal/bonos` | compararfondos.com.ar bond client (single-request payload, USD quotes) + parity math |
 | `internal/tui` | Dashboard model, view, and refresh pipeline |
-| `odd/tasks/macro-tui.md` | Feature plan of record and verification evidence |
+| `odd/tasks/macro-tui.md` | macro-tui feature plan of record and verification evidence |
+| `odd/tasks/bond-source-swap.md` | bond-source-swap feature plan of record |
 
 ## Notes and limits
 
