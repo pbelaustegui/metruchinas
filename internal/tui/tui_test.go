@@ -50,8 +50,8 @@ func okRiesgo(context.Context) (riesgo.Indicator, error) {
 
 func okBonds() []bonos.BondQuote {
 	return []bonos.BondQuote{
-		{Ticker: "GD30", Ultimo: 67550.0, Variacion: -2.86, Cierre: 69540.0},
-		{Ticker: "GD29", Ultimo: 85000.0, Variacion: 1.50, Cierre: 83750.0},
+		{Ticker: "GD30", Ultimo: 57.57, Variacion: -2.86},
+		{Ticker: "GD29", Ultimo: 55.52, Variacion: 1.50},
 	}
 }
 
@@ -565,15 +565,15 @@ func TestViewRendersBondsSection(t *testing.T) {
 	m := newTestModel(okQuotes, okRiesgo)
 	m.loaded = true
 	m.bonds = okBonds()
-	// Set CCL venta so USD prices can be computed.
-	cclRate := 1200.0
-	m.cclVenta = &cclRate
 	view := m.View()
 	if !strings.Contains(view, "Bonos soberanos") {
 		t.Error("view should contain bonds section header")
 	}
 	if !strings.Contains(view, "GD30") {
 		t.Error("view should contain GD30 ticker")
+	}
+	if !strings.Contains(view, "USD 57,57") {
+		t.Error("view should contain the USD price published by the source")
 	}
 }
 
@@ -582,34 +582,13 @@ func TestViewRendersBondError(t *testing.T) {
 	m.loaded = true
 	m.bonds = []bonos.BondQuote{
 		{Ticker: "GD30", Err: errors.New("test error")},
-		{Ticker: "GD29", Ultimo: 85000.0, Variacion: 1.50, Cierre: 83750.0},
+		{Ticker: "GD29", Ultimo: 55.52, Variacion: 1.50},
 	}
-	cclRate := 1200.0
-	m.cclVenta = &cclRate
 	view := m.View()
 	if !strings.Contains(view, "GD30") {
 		t.Error("view should show GD30 even with error")
 	}
 	if !strings.Contains(view, "GD29") {
 		t.Error("view should show GD29 with data")
-	}
-}
-
-func TestCCLVentaExtractedFromQuotes(t *testing.T) {
-	m := newTestModel(okQuotes, okRiesgo)
-	quotes, _ := okQuotes(context.Background())
-	ind, _ := okRiesgo(context.Background())
-	updated, _ := m.Update(dataMsg{
-		quotes:    quotes,
-		riesgo:    ind,
-		fetchedAt: time.Now(),
-	})
-	model := updated.(Model)
-	if model.cclVenta == nil {
-		t.Fatal("cclVenta should be extracted from CCL quote")
-	}
-	// okQuotes() has contadoconliqui with venta pointer; check it's non-zero.
-	if *model.cclVenta <= 0 {
-		t.Errorf("cclVenta should be positive, got %f", *model.cclVenta)
 	}
 }

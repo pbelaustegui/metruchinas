@@ -72,7 +72,6 @@ type Model struct {
 	interval    time.Duration
 	timeout     time.Duration
 	loaded      bool
-	cclVenta    *float64
 }
 
 // New returns a Model wired to the real public APIs.
@@ -140,17 +139,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.bondsErr = msg.bondsErr
 		} else {
 			m.bonds, m.bondsErr = msg.bonds, nil
-		}
-		// Extract CCL sell rate for USD bond price conversion.
-		m.cclVenta = nil
-		if m.quotesErr == nil {
-			for _, q := range m.quotes {
-				if q.Casa == "contadoconliqui" && q.Venta != nil {
-					v := *q.Venta
-					m.cclVenta = &v
-					break
-				}
-			}
 		}
 		return m, nil
 	}
@@ -308,15 +296,9 @@ func (m Model) renderBonds() string {
 			continue
 		}
 
-		// Compute USD price via CCL division.
-		var priceUSD float64
-		var usdStr string
-		if m.cclVenta != nil && *m.cclVenta > 0 {
-			priceUSD = bq.Ultimo / *m.cclVenta
-			usdStr = formatNumber(priceUSD, 2)
-		} else {
-			usdStr = "—"
-		}
+		// Price in USD as published by the source.
+		priceUSD := bq.Ultimo
+		usdStr := formatNumber(priceUSD, 2)
 
 		// Compute parity.
 		var parityStr string
@@ -350,12 +332,11 @@ func (m Model) renderBonds() string {
 			varStr = mutedStyle.Render(fmt.Sprintf("  %.2f%%", bq.Variacion))
 		}
 
-		b.WriteString(fmt.Sprintf("  %s  %s  %s  %s  %s  %s\n",
+		b.WriteString(fmt.Sprintf("  %s  %s  %s  %s  %s\n",
 			labelStyle.Render(padRight(bq.Ticker, 6)),
 			rateStyle.Render(padRight("P:"+parityStr, 12)),
 			mutedStyle.Render(padRight("VT:"+tvStr, 12)),
 			rateStyle.Render(padRight("USD "+usdStr, 12)),
-			mutedStyle.Render(padRight("ARS "+formatNumber(bq.Ultimo, 0), 14)),
 			varStr))
 	}
 	return b.String()
