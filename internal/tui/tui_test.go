@@ -662,20 +662,6 @@ func TestViewRendersStaleRiesgoWithErrorAndTimestamp(t *testing.T) {
 	}
 }
 
-func TestViewRendersStaleBondsWithErrorAndTimestamp(t *testing.T) {
-	m := newTestModel(okQuotes, okRiesgo)
-	updated, _ := m.Update(dataMsg{bonds: okBonds(), fetchedAt: staleAt})
-	m = updated.(Model)
-	m.bondsErr = errors.New("bonos timeout")
-
-	view := m.View()
-	for _, want := range []string{"GD30", "bonos timeout", "10:30:00", "desactualizado"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("View() missing %q for stale bonds", want)
-		}
-	}
-}
-
 func TestViewFailingSourceWithoutDataShowsUnavailable(t *testing.T) {
 	m := newTestModel(okQuotes, okRiesgo)
 	m.loaded = true
@@ -689,5 +675,68 @@ func TestViewFailingSourceWithoutDataShowsUnavailable(t *testing.T) {
 	}
 	if strings.Contains(view, "desactualizado") {
 		t.Error("View() claims stale data although no data was ever fetched")
+	}
+}
+
+func TestViewRendersStaleRiesgoWithZeroSourceDate(t *testing.T) {
+	// The source may not publish a date for the indicator; the stale gate
+	// must rely on the success stamp, not on riesgo.Date.
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{
+		riesgo:    riesgo.Indicator{Value: 700},
+		fetchedAt: staleAt,
+	})
+	m = updated.(Model)
+	m.riesgoErr = errors.New("ambito timeout")
+
+	view := m.View()
+	if strings.Contains(view, "no disponible") {
+		t.Errorf("View() = %q, want stale data although the source date is zero", view)
+	}
+	for _, want := range []string{"700", "ambito timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() missing %q for stale riesgo with zero source date", want)
+		}
+	}
+}
+
+func TestRenderBondsStaleNoteStartsOnItsOwnLine(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{bonds: okBonds(), fetchedAt: staleAt})
+	m = updated.(Model)
+	m.bondsErr = errors.New("bonos timeout")
+
+	out := m.renderBonds()
+	idx := strings.Index(out, "  ⚠ desactualizado")
+	if idx < 0 {
+		t.Fatalf("renderBonds() missing the stale note: %q", out)
+	}
+	if idx == 0 || out[idx-1] != '\n' {
+		t.Errorf("stale note does not start on its own line: %q", out)
+	}
+	if !strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\n\n") {
+		t.Errorf("renderBonds() must end with exactly one newline: %q", out)
+	}
+}
+
+func TestViewRendersStaleBondsInOrderWithValues(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{bonds: okBonds(), fetchedAt: staleAt})
+	m = updated.(Model)
+	m.bondsErr = errors.New("bonos timeout")
+
+	view := m.View()
+	rowsAt := strings.Index(view, "GD29")
+	noteAt := strings.Index(view, "desactualizado")
+	if rowsAt < 0 || noteAt < 0 {
+		t.Fatalf("View() missing bond rows or stale note: %q", view)
+	}
+	if rowsAt > noteAt {
+		t.Error("stale note renders before the bond rows, want rows first")
+	}
+	for _, want := range []string{"GD30", "57,57", "GD29", "55,52", "bonos timeout", "10:30:00"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() missing %q for stale bonds", want)
+		}
 	}
 }

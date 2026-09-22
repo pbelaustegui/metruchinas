@@ -271,13 +271,16 @@ func staleNote(at time.Time, err error) string {
 
 func (m Model) renderRiesgo() string {
 	if m.riesgoErr != nil {
-		// Keep showing the last good indicator, flagged as stale.
-		if !m.riesgo.Date.IsZero() {
+		// Keep showing the last good indicator, flagged as stale. The gate is
+		// the success stamp, not riesgo.Date: the source may omit the date.
+		if !m.riesgoAt.IsZero() {
 			return m.renderRiesgoValue() + "\n" + staleNote(m.riesgoAt, m.riesgoErr)
 		}
 		return errorStyle.Render(fmt.Sprintf("  no disponible: %v", m.riesgoErr))
 	}
-	if m.riesgo.Date.IsZero() {
+	// The gate is the success stamp, not riesgo.Date: the source may omit
+	// the publication date.
+	if m.riesgoAt.IsZero() {
 		if !m.loaded {
 			return mutedStyle.Render("  cargando…")
 		}
@@ -299,7 +302,9 @@ func (m Model) renderRiesgoValue() string {
 	b.WriteString(valueStyle.Render(formatNumber(m.riesgo.Value, 0)))
 	b.WriteString("  ")
 	b.WriteString(style.Render(fmt.Sprintf("%s %s%%", arrow, formatNumber(m.riesgo.Variation, 2))))
-	b.WriteString(mutedStyle.Render(fmt.Sprintf("   (%s)", m.riesgo.Date.Format("02-01-2006"))))
+	if !m.riesgo.Date.IsZero() {
+		b.WriteString(mutedStyle.Render(fmt.Sprintf("   (%s)", m.riesgo.Date.Format("02-01-2006"))))
+	}
 	return b.String()
 }
 
@@ -310,9 +315,12 @@ func (m Model) renderBonds() string {
 	b.WriteByte('\n')
 
 	if m.bondsErr != nil {
-		// Keep showing the last good bond rows, flagged as stale.
+		// Keep showing the last good bond rows, flagged as stale. Separate
+		// the note from the rows explicitly instead of relying on
+		// renderBondRows ending with a newline.
 		if len(m.bonds) > 0 {
-			b.WriteString(m.renderBondRows())
+			b.WriteString(strings.TrimSuffix(m.renderBondRows(), "\n"))
+			b.WriteByte('\n')
 			b.WriteString(staleNote(m.bondsAt, m.bondsErr))
 			b.WriteByte('\n')
 			return b.String()
