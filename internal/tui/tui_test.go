@@ -160,8 +160,8 @@ func TestUpdateStoresFetchedDataAndClearsErrors(t *testing.T) {
 	if m.riesgo.Value != 515 {
 		t.Errorf("riesgo.Value = %v, want 515", m.riesgo.Value)
 	}
-	if !m.fetchedAt.Equal(at) {
-		t.Errorf("fetchedAt = %v, want %v", m.fetchedAt, at)
+	if !m.quotesAt.Equal(at) || !m.riesgoAt.Equal(at) {
+		t.Errorf("success stamps = %v / %v, want %v", m.quotesAt, m.riesgoAt, at)
 	}
 	if !m.loaded {
 		t.Error("loaded = false, want true after data arrives")
@@ -590,5 +590,153 @@ func TestViewRendersBondError(t *testing.T) {
 	}
 	if !strings.Contains(view, "GD29") {
 		t.Error("view should show GD29 with data")
+	}
+}
+
+// staleAt is a fixed wall-clock time used by the stale-rendering tests.
+var staleAt = time.Date(2026, 9, 17, 10, 30, 0, 0, time.Local)
+
+func TestUpdateStampsPerSourceSuccessTimes(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	ind, _ := okRiesgo(context.Background())
+	updated, _ := m.Update(dataMsg{quotes: quotes, riesgo: ind, bonds: okBonds(), fetchedAt: staleAt})
+	m = updated.(Model)
+
+	if !m.quotesAt.Equal(staleAt) {
+		t.Errorf("quotesAt = %v, want %v after a successful fetch", m.quotesAt, staleAt)
+	}
+	if !m.riesgoAt.Equal(staleAt) {
+		t.Errorf("riesgoAt = %v, want %v after a successful fetch", m.riesgoAt, staleAt)
+	}
+	if !m.bondsAt.Equal(staleAt) {
+		t.Errorf("bondsAt = %v, want %v after a successful fetch", m.bondsAt, staleAt)
+	}
+
+	// A later failed cycle must keep the previous success stamps and data.
+	boom := errors.New("api caida")
+	updated, _ = m.Update(dataMsg{quotesErr: boom, riesgoErr: boom, bondsErr: boom, fetchedAt: time.Now()})
+	m = updated.(Model)
+
+	if !m.quotesAt.Equal(staleAt) {
+		t.Errorf("quotesAt = %v, want %v untouched by the failure", m.quotesAt, staleAt)
+	}
+	if !m.riesgoAt.Equal(staleAt) {
+		t.Errorf("riesgoAt = %v, want %v untouched by the failure", m.riesgoAt, staleAt)
+	}
+	if !m.bondsAt.Equal(staleAt) {
+		t.Errorf("bondsAt = %v, want %v untouched by the failure", m.bondsAt, staleAt)
+	}
+	if len(m.quotes) != 4 || m.riesgo.Value != 515 || len(m.bonds) != 2 {
+		t.Error("failed cycle discarded last good data, want it kept for stale rendering")
+	}
+}
+
+func TestViewRendersStaleQuotesWithErrorAndTimestamp(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	updated, _ := m.Update(dataMsg{quotes: quotes, fetchedAt: staleAt})
+	m = updated.(Model)
+	m.quotesErr = errors.New("dolarapi timeout")
+
+	view := m.View()
+	for _, want := range []string{"Oficial", "1.485,00", "dolarapi timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() missing %q for stale quotes", want)
+		}
+	}
+}
+
+func TestViewRendersStaleRiesgoWithErrorAndTimestamp(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	ind, _ := okRiesgo(context.Background())
+	updated, _ := m.Update(dataMsg{riesgo: ind, fetchedAt: staleAt})
+	m = updated.(Model)
+	m.riesgoErr = errors.New("ambito timeout")
+
+	view := m.View()
+	for _, want := range []string{"515", "ambito timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() missing %q for stale riesgo", want)
+		}
+	}
+}
+
+func TestViewFailingSourceWithoutDataShowsUnavailable(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.loaded = true
+	m.quotesErr = errors.New("dolarapi timeout")
+	m.riesgoErr = errors.New("ambito timeout")
+	m.bondsErr = errors.New("bonos timeout")
+
+	view := m.View()
+	if !strings.Contains(view, "no disponible") {
+		t.Errorf("View() = %q, want 'no disponible' when a source never succeeded", view)
+	}
+	if strings.Contains(view, "desactualizado") {
+		t.Error("View() claims stale data although no data was ever fetched")
+	}
+}
+
+func TestViewRendersStaleRiesgoWithZeroSourceDate(t *testing.T) {
+	// The source may not publish a date for the indicator; the stale gate
+	// must rely on the success stamp, not on riesgo.Date.
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{
+		riesgo:    riesgo.Indicator{Value: 700},
+		fetchedAt: staleAt,
+	})
+	m = updated.(Model)
+	m.riesgoErr = errors.New("ambito timeout")
+
+	view := m.View()
+	if strings.Contains(view, "no disponible") {
+		t.Errorf("View() = %q, want stale data although the source date is zero", view)
+	}
+	for _, want := range []string{"700", "ambito timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() missing %q for stale riesgo with zero source date", want)
+		}
+	}
+}
+
+func TestRenderBondsStaleNoteStartsOnItsOwnLine(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{bonds: okBonds(), fetchedAt: staleAt})
+	m = updated.(Model)
+	m.bondsErr = errors.New("bonos timeout")
+
+	out := m.renderBonds()
+	idx := strings.Index(out, "  ⚠ desactualizado")
+	if idx < 0 {
+		t.Fatalf("renderBonds() missing the stale note: %q", out)
+	}
+	if idx == 0 || out[idx-1] != '\n' {
+		t.Errorf("stale note does not start on its own line: %q", out)
+	}
+	if !strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\n\n") {
+		t.Errorf("renderBonds() must end with exactly one newline: %q", out)
+	}
+}
+
+func TestViewRendersStaleBondsInOrderWithValues(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{bonds: okBonds(), fetchedAt: staleAt})
+	m = updated.(Model)
+	m.bondsErr = errors.New("bonos timeout")
+
+	view := m.View()
+	rowsAt := strings.Index(view, "GD29")
+	noteAt := strings.Index(view, "desactualizado")
+	if rowsAt < 0 || noteAt < 0 {
+		t.Fatalf("View() missing bond rows or stale note: %q", view)
+	}
+	if rowsAt > noteAt {
+		t.Error("stale note renders before the bond rows, want rows first")
+	}
+	for _, want := range []string{"GD30", "57,57", "GD29", "55,52", "bonos timeout", "10:30:00"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() missing %q for stale bonds", want)
+		}
 	}
 }

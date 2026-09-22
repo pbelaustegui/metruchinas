@@ -58,13 +58,18 @@ type tickMsg time.Time
 
 // Model is the dashboard state.
 type Model struct {
-	quotes      []dolar.Quote
-	quotesErr   error
-	riesgo      riesgo.Indicator
-	riesgoErr   error
-	bonds       []bonos.BondQuote
-	bondsErr    error
-	fetchedAt   time.Time
+	quotes    []dolar.Quote
+	quotesErr error
+	riesgo    riesgo.Indicator
+	riesgoErr error
+	bonds     []bonos.BondQuote
+	bondsErr  error
+	// quotesAt, riesgoAt and bondsAt are the wall-clock times of the last
+	// successful fetch per source. They power stale rendering: a failing
+	// refresh keeps the last good data on screen and says how old it is.
+	quotesAt    time.Time
+	riesgoAt    time.Time
+	bondsAt     time.Time
 	refreshing  bool
 	fetchQuotes QuotesFetcher
 	fetchRiesgo RiesgoFetcher
@@ -124,21 +129,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dataMsg:
 		m.refreshing = false
 		m.loaded = true
-		m.fetchedAt = msg.fetchedAt
 		if msg.quotesErr != nil {
 			m.quotesErr = msg.quotesErr
 		} else {
 			m.quotes, m.quotesErr = msg.quotes, nil
+			m.quotesAt = msg.fetchedAt
 		}
 		if msg.riesgoErr != nil {
 			m.riesgoErr = msg.riesgoErr
 		} else {
 			m.riesgo, m.riesgoErr = msg.riesgo, nil
+			m.riesgoAt = msg.fetchedAt
 		}
 		if msg.bondsErr != nil {
 			m.bondsErr = msg.bondsErr
 		} else {
 			m.bonds, m.bondsErr = msg.bonds, nil
+			m.bondsAt = msg.fetchedAt
 		}
 		return m, nil
 	}
@@ -222,17 +229,26 @@ func (m Model) View() string {
 }
 
 func (m Model) renderQuotes() string {
+	rows := displayRows(m.quotes)
 	if m.quotesErr != nil {
+		// Keep showing the last good quotes, flagged as stale with the
+		// error and the time they were successfully fetched.
+		if len(rows) > 0 {
+			return renderQuoteRows(rows) + "\n" + staleNote(m.quotesAt, m.quotesErr)
+		}
 		return errorStyle.Render(fmt.Sprintf("  no disponible: %v", m.quotesErr))
 	}
-	rows := displayRows(m.quotes)
 	if len(rows) == 0 {
 		if !m.loaded {
 			return mutedStyle.Render("  cargando…")
 		}
 		return mutedStyle.Render("  sin cotizaciones para mostrar")
 	}
+	return renderQuoteRows(rows)
+}
 
+// renderQuoteRows formats one quote per line: house name and buy/sell rates.
+func renderQuoteRows(rows []row) string {
 	var b strings.Builder
 	for i, r := range rows {
 		if i > 0 {
@@ -247,16 +263,34 @@ func (m Model) renderQuotes() string {
 	return b.String()
 }
 
+// staleNote renders the stale-data warning shown under a section whose last
+// refresh failed: the error plus the time the displayed data was fetched.
+func staleNote(at time.Time, err error) string {
+	return errorStyle.Render(fmt.Sprintf("  ⚠ desactualizado · últimos datos %s · %v", at.Format("15:04:05"), err))
+}
+
 func (m Model) renderRiesgo() string {
 	if m.riesgoErr != nil {
+		// Keep showing the last good indicator, flagged as stale. The gate is
+		// the success stamp, not riesgo.Date: the source may omit the date.
+		if !m.riesgoAt.IsZero() {
+			return m.renderRiesgoValue() + "\n" + staleNote(m.riesgoAt, m.riesgoErr)
+		}
 		return errorStyle.Render(fmt.Sprintf("  no disponible: %v", m.riesgoErr))
 	}
-	if m.riesgo.Date.IsZero() {
+	// The gate is the success stamp, not riesgo.Date: the source may omit
+	// the publication date.
+	if m.riesgoAt.IsZero() {
 		if !m.loaded {
 			return mutedStyle.Render("  cargando…")
 		}
 		return mutedStyle.Render("  sin datos")
 	}
+	return m.renderRiesgoValue()
+}
+
+// renderRiesgoValue formats the indicator value, daily variation and date.
+func (m Model) renderRiesgoValue() string {
 	arrow := "▲"
 	style := upStyle
 	if m.riesgo.Variation < 0 {
@@ -268,7 +302,9 @@ func (m Model) renderRiesgo() string {
 	b.WriteString(valueStyle.Render(formatNumber(m.riesgo.Value, 0)))
 	b.WriteString("  ")
 	b.WriteString(style.Render(fmt.Sprintf("%s %s%%", arrow, formatNumber(m.riesgo.Variation, 2))))
-	b.WriteString(mutedStyle.Render(fmt.Sprintf("   (%s)", m.riesgo.Date.Format("02-01-2006"))))
+	if !m.riesgo.Date.IsZero() {
+		b.WriteString(mutedStyle.Render(fmt.Sprintf("   (%s)", m.riesgo.Date.Format("02-01-2006"))))
+	}
 	return b.String()
 }
 
@@ -279,6 +315,16 @@ func (m Model) renderBonds() string {
 	b.WriteByte('\n')
 
 	if m.bondsErr != nil {
+		// Keep showing the last good bond rows, flagged as stale. Separate
+		// the note from the rows explicitly instead of relying on
+		// renderBondRows ending with a newline.
+		if len(m.bonds) > 0 {
+			b.WriteString(strings.TrimSuffix(m.renderBondRows(), "\n"))
+			b.WriteByte('\n')
+			b.WriteString(staleNote(m.bondsAt, m.bondsErr))
+			b.WriteByte('\n')
+			return b.String()
+		}
 		b.WriteString(errorStyle.Render("  " + m.bondsErr.Error()))
 		b.WriteByte('\n')
 		return b.String()
@@ -287,6 +333,14 @@ func (m Model) renderBonds() string {
 		return b.String()
 	}
 
+	b.WriteString(m.renderBondRows())
+	return b.String()
+}
+
+// renderBondRows formats one row per bond: parity, technical value, USD price
+// and daily variation.
+func (m Model) renderBondRows() string {
+	var b strings.Builder
 	now := time.Now()
 	for _, bq := range m.bonds {
 		if bq.Err != nil {
@@ -342,11 +396,25 @@ func (m Model) renderBonds() string {
 	return b.String()
 }
 
+// lastSuccessAt returns the most recent per-source success time, which is
+// what "actualizado" in the footer should reflect: a fully failed cycle did
+// not update anything.
+func (m Model) lastSuccessAt() time.Time {
+	latest := m.quotesAt
+	if m.riesgoAt.After(latest) {
+		latest = m.riesgoAt
+	}
+	if m.bondsAt.After(latest) {
+		latest = m.bondsAt
+	}
+	return latest
+}
+
 func (m Model) renderFooter() string {
-	status := "actualizado " + m.fetchedAt.Format("15:04:05")
+	status := "actualizado " + m.lastSuccessAt().Format("15:04:05")
 	if m.refreshing {
 		status = "actualizando…"
-	} else if m.fetchedAt.IsZero() {
+	} else if m.lastSuccessAt().IsZero() {
 		status = "sin datos"
 	}
 	return mutedStyle.Render(fmt.Sprintf("%s · r refrescar · q salir", status))
