@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -737,6 +738,36 @@ func TestViewRendersStaleBondsInOrderWithValues(t *testing.T) {
 	for _, want := range []string{"GD30", "57,57", "GD29", "55,52", "bonos timeout", "10:30:00"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("View() missing %q for stale bonds", want)
+		}
+	}
+}
+
+func TestVariationStyleFollowsMarketConvention(t *testing.T) {
+	// Bonds: green when the variation is positive, red when negative.
+	// Country risk is the opposite convention, which is why the bond rows
+	// cannot reuse upStyle/downStyle directly.
+	if got := variationStyle(1.5); !reflect.DeepEqual(got, gainStyle) {
+		t.Errorf("variationStyle(1.5) = %v, want gainStyle (green)", got)
+	}
+	if got := variationStyle(-2.86); !reflect.DeepEqual(got, lossStyle) {
+		t.Errorf("variationStyle(-2.86) = %v, want lossStyle (red)", got)
+	}
+	if got := variationStyle(0); !reflect.DeepEqual(got, gainStyle) {
+		t.Errorf("variationStyle(0) = %v, want gainStyle (only negatives are red)", got)
+	}
+}
+
+func TestViewRendersBondVariationArrows(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{bonds: []bonos.BondQuote{
+		{Ticker: "GD30", Ultimo: 57.57, Variacion: 1.5},
+		{Ticker: "GD29", Ultimo: 55.52, Variacion: -2.86},
+	}, fetchedAt: staleAt})
+	view := updated.(Model).View()
+
+	for _, want := range []string{"▲ 1.50%", "▼ -2.86%"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() missing %q", want)
 		}
 	}
 }
