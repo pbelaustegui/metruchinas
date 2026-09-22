@@ -1,5 +1,6 @@
-// Package tui renders the macroeconomic indicator dashboard: USD/ARS quotes
-// and the Argentine country-risk index.
+// Package tui renders the macroeconomic indicator dashboard: USD/ARS quotes,
+// the Argentine country-risk index, the sovereign GD bond parity table, and the
+// US Treasury par yield curve.
 //
 // The model is a plain Bubbletea model with injected fetchers, so state
 // transitions can be tested by calling Update directly with messages.
@@ -8,6 +9,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/riesgo"
+	"metruchinas/internal/tesoro"
 )
 
 // DefaultRefreshInterval is how often the dashboard refetches both sources.
@@ -41,16 +44,24 @@ type RiesgoFetcher func(ctx context.Context) (riesgo.Indicator, error)
 // BondsFetcher retrieves the GD bond quotes. It matches a closure wrapping bonos.Client.Fetch.
 type BondsFetcher func(ctx context.Context) ([]bonos.BondQuote, error)
 
+// TreasuryFetcher retrieves the US Treasury par yield curve. It matches
+// tesoro.Cache.Get: force asks for a refetch instead of the cached curve, which
+// is how the `r` key reaches the publication cache. On every other cycle the
+// cache decides whether the request is needed at all.
+type TreasuryFetcher func(ctx context.Context, force bool) (tesoro.Curve, error)
+
 // dataMsg carries the outcome of one refresh cycle. Each source reports its
 // own error so a failing source never hides the other one's data.
 type dataMsg struct {
-	quotes    []dolar.Quote
-	quotesErr error
-	riesgo    riesgo.Indicator
-	riesgoErr error
-	bonds     []bonos.BondQuote
-	bondsErr  error
-	fetchedAt time.Time
+	quotes      []dolar.Quote
+	quotesErr   error
+	riesgo      riesgo.Indicator
+	riesgoErr   error
+	bonds       []bonos.BondQuote
+	bondsErr    error
+	curve       tesoro.Curve
+	treasuryErr error
+	fetchedAt   time.Time
 }
 
 // tickMsg triggers a periodic refresh.
@@ -58,25 +69,29 @@ type tickMsg time.Time
 
 // Model is the dashboard state.
 type Model struct {
-	quotes    []dolar.Quote
-	quotesErr error
-	riesgo    riesgo.Indicator
-	riesgoErr error
-	bonds     []bonos.BondQuote
-	bondsErr  error
-	// quotesAt, riesgoAt and bondsAt are the wall-clock times of the last
-	// successful fetch per source. They power stale rendering: a failing
+	quotes      []dolar.Quote
+	quotesErr   error
+	riesgo      riesgo.Indicator
+	riesgoErr   error
+	bonds       []bonos.BondQuote
+	bondsErr    error
+	curve       tesoro.Curve
+	treasuryErr error
+	// quotesAt, riesgoAt, bondsAt and treasuryAt are the wall-clock times of the
+	// last successful fetch per source. They power stale rendering: a failing
 	// refresh keeps the last good data on screen and says how old it is.
-	quotesAt    time.Time
-	riesgoAt    time.Time
-	bondsAt     time.Time
-	refreshing  bool
-	fetchQuotes QuotesFetcher
-	fetchRiesgo RiesgoFetcher
-	fetchBonds  BondsFetcher
-	interval    time.Duration
-	timeout     time.Duration
-	loaded      bool
+	quotesAt      time.Time
+	riesgoAt      time.Time
+	bondsAt       time.Time
+	treasuryAt    time.Time
+	refreshing    bool
+	fetchQuotes   QuotesFetcher
+	fetchRiesgo   RiesgoFetcher
+	fetchBonds    BondsFetcher
+	fetchTreasury TreasuryFetcher
+	interval      time.Duration
+	timeout       time.Duration
+	loaded        bool
 }
 
 // New returns a Model wired to the real public APIs.
@@ -84,21 +99,26 @@ func New() Model {
 	dc := dolar.NewClient()
 	rc := riesgo.NewClient()
 	bc := bonos.NewClient()
+	// Treasury publishes once per business day, so the curve is wrapped in a
+	// publication cache: without it the 30-second heartbeat would re-download
+	// the same year of CSV all day long.
+	curveCache := tesoro.NewPublisherCache(tesoro.NewClient().Fetch)
 	return Model{
 		fetchQuotes: dc.Fetch,
 		fetchRiesgo: rc.Fetch,
 		fetchBonds: func(ctx context.Context) ([]bonos.BondQuote, error) {
 			return bc.Fetch(ctx, bondTickers...)
 		},
-		interval:   DefaultRefreshInterval,
-		timeout:    fetchTimeout,
-		refreshing: true,
+		fetchTreasury: curveCache.Get,
+		interval:      DefaultRefreshInterval,
+		timeout:       fetchTimeout,
+		refreshing:    true,
 	}
 }
 
 // Init starts the first fetch and the refresh heartbeat.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.refresh(), tickCmd(m.interval))
+	return tea.Batch(m.refresh(false), tickCmd(m.interval))
 }
 
 // Update handles keys, ticks and fetched data. It never blocks: the network
@@ -112,7 +132,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if !m.refreshing {
 				m.refreshing = true
-				return m, m.refresh()
+				// Only `r` invalidates the Treasury publication cache, so the
+				// intent travels with the refresh command instead of living as
+				// extra model state.
+				return m, m.refresh(true)
 			}
 		}
 		return m, nil
@@ -122,7 +145,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{tickCmd(m.interval)}
 		if !m.refreshing {
 			m.refreshing = true
-			cmds = append(cmds, m.refresh())
+			cmds = append(cmds, m.refresh(false))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -147,14 +170,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.bonds, m.bondsErr = msg.bonds, nil
 			m.bondsAt = msg.fetchedAt
 		}
+		if msg.treasuryErr != nil {
+			m.treasuryErr = msg.treasuryErr
+		} else {
+			m.curve, m.treasuryErr = msg.curve, nil
+			m.treasuryAt = msg.fetchedAt
+		}
 		return m, nil
 	}
 	return m, nil
 }
 
 // refresh fetches all sources and reports them in a single message, so one
-// failing source never discards the other one's data.
-func (m Model) refresh() tea.Cmd {
+// failing source never discards the other one's data. force is the user intent
+// behind `r` and reaches the sources that cache their answer.
+func (m Model) refresh(force bool) tea.Cmd {
 	return func() tea.Msg {
 		timeout := m.timeout
 		if timeout <= 0 {
@@ -191,6 +221,15 @@ func (m Model) refresh() tea.Cmd {
 		} else {
 			msg.bonds = bondQuotes
 		}
+		curve, err := m.fetchTreasury(ctx, force)
+		if err == nil {
+			err = timeoutErr(ctx, "tesoro", timeout)
+		}
+		if err != nil {
+			msg.treasuryErr = err
+		} else {
+			msg.curve = curve
+		}
 		return msg
 	}
 }
@@ -219,6 +258,8 @@ func (m Model) View() string {
 	b.WriteString(sectionStyle.Render("Riesgo país (EMBI Argentina)"))
 	b.WriteString("\n")
 	b.WriteString(m.renderRiesgo())
+	b.WriteString("\n\n")
+	b.WriteString(m.renderTreasury())
 	b.WriteString("\n\n")
 	b.WriteString(m.renderBonds())
 	b.WriteString("\n\n")
@@ -306,6 +347,189 @@ func (m Model) renderRiesgoValue() string {
 		b.WriteString(mutedStyle.Render(fmt.Sprintf("   (%s)", m.riesgo.Date.Format("02-01-2006"))))
 	}
 	return b.String()
+}
+
+// treasurySectionTitle is the curve section header.
+const treasurySectionTitle = "Curva del Tesoro EE. UU."
+
+const (
+	// curveYieldWidth and curveDeltaWidth are the fixed display widths of the
+	// two value columns. They are sized for a double-digit level and a
+	// double-digit change so a wide value never shifts the columns.
+	curveYieldWidth = 5
+	curveDeltaWidth = 4
+	// curveColumnGap separates the two curve columns.
+	curveColumnGap = "   "
+)
+
+// renderTreasury renders the US Treasury par yield curve: the publication date
+// in the section header, two columns of seven tenors carrying each level and
+// its daily change in basis points, and the 10Y-2Y spread underneath.
+//
+// Two columns keep the section inside nine lines. A single column of fourteen
+// rows would add eight more lines to a dashboard that already runs past an
+// 80x24 terminal.
+func (m Model) renderTreasury() string {
+	var b strings.Builder
+	b.WriteString(sectionStyle.Render(treasurySectionTitle))
+	if !m.curve.Date.IsZero() {
+		b.WriteString(mutedStyle.Render(fmt.Sprintf(" · %s · Δ diario (pb)", m.curve.Date.Format("02-01-2006"))))
+	}
+	b.WriteByte('\n')
+
+	if m.treasuryErr != nil && m.treasuryAt.IsZero() {
+		b.WriteString(errorStyle.Render("  no disponible: " + m.treasuryErr.Error()))
+		return b.String()
+	}
+	if m.treasuryAt.IsZero() {
+		if !m.loaded {
+			b.WriteString(mutedStyle.Render("  cargando…"))
+			return b.String()
+		}
+		b.WriteString(mutedStyle.Render("  sin datos"))
+		return b.String()
+	}
+
+	b.WriteString(m.renderCurveRows())
+	b.WriteByte('\n')
+	b.WriteString(m.renderSpread())
+	if m.treasuryErr != nil {
+		// Keep showing the last good curve, flagged as stale, like every other
+		// section does.
+		b.WriteByte('\n')
+		b.WriteString(staleNote(m.treasuryAt, m.treasuryErr))
+	}
+	return b.String()
+}
+
+// renderCurveRows renders the curve as two columns of seven rows in ascending
+// maturity order. A tenor Treasury did not publish keeps its slot and renders
+// as a dash, so a retired or brand-new column can never shift its neighbours.
+func (m Model) renderCurveRows() string {
+	tenors := tesoro.Tenors()
+	rowsPerColumn := (len(tenors) + 1) / 2
+	labelWidth := curveLabelWidth(tenors)
+
+	published := make(map[string]tesoro.Point, len(m.curve.Points))
+	for _, point := range m.curve.Points {
+		published[point.Tenor] = point
+	}
+
+	var b strings.Builder
+	for i := 0; i < rowsPerColumn; i++ {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("  ")
+		left := tenors[i]
+		leftPoint, leftOK := published[left.Key]
+		b.WriteString(curveCell(left.Label, leftPoint, leftOK, labelWidth))
+
+		rightIndex := i + rowsPerColumn
+		if rightIndex >= len(tenors) {
+			break
+		}
+		b.WriteString(curveColumnGap)
+		right := tenors[rightIndex]
+		rightPoint, rightOK := published[right.Key]
+		b.WriteString(curveCell(right.Label, rightPoint, rightOK, labelWidth))
+	}
+	return b.String()
+}
+
+// curveCell renders one curve cell: display label, level, and daily change. An
+// unpublished tenor renders a dash in both value columns.
+func curveCell(label string, point tesoro.Point, published bool, labelWidth int) string {
+	var b strings.Builder
+	b.WriteString(labelStyle.Render(padRight(label, labelWidth)))
+	b.WriteString("  ")
+	if !published {
+		b.WriteString(mutedStyle.Render(padRight("—", curveYieldWidth)))
+		b.WriteString("  ")
+		b.WriteString(mutedStyle.Render(padRight("—", curveDeltaWidth)))
+		return b.String()
+	}
+	b.WriteString(rateStyle.Render(padRight(formatNumber(point.Yield, 2), curveYieldWidth)))
+	b.WriteString("  ")
+	b.WriteString(curveDeltaCell(point.DeltaBp))
+	return b.String()
+}
+
+// curveDeltaCell renders a daily change in basis points. The arrow carries the
+// direction and the colour follows the yield convention (rising yields red,
+// falling green); an unknown change is a dash and a flat one a muted dot.
+//
+// The change is rounded to whole basis points because it is derived from two
+// yields the source publishes with two decimals: the difference is exact to the
+// basis point, and rounding also keeps float noise from rendering as -0.
+func curveDeltaCell(deltaBp *float64) string {
+	if deltaBp == nil {
+		return mutedStyle.Render(padRight("—", curveDeltaWidth))
+	}
+	bp := int(math.Round(*deltaBp))
+	marker := "·"
+	switch {
+	case bp > 0:
+		marker = "▲"
+	case bp < 0:
+		marker = "▼"
+	}
+	cell := fmt.Sprintf("%s %2s", marker, formatNumber(math.Abs(float64(bp)), 0))
+	return curveDeltaStyle(bp).Render(padRight(cell, curveDeltaWidth))
+}
+
+// curveDeltaStyle returns the style for a daily yield change in basis points.
+// Yields follow the market convention: a rise is red, a fall is green, and no
+// change is muted rather than coloured.
+func curveDeltaStyle(bp int) lipgloss.Style {
+	switch {
+	case bp > 0:
+		return upStyle
+	case bp < 0:
+		return downStyle
+	default:
+		return mutedStyle
+	}
+}
+
+// curveLabelWidth is the widest display label, so both curve columns start
+// their value columns on the same display cell.
+func curveLabelWidth(tenors []tesoro.Tenor) int {
+	width := 0
+	for _, tenor := range tenors {
+		if w := lipgloss.Width(tenor.Label); w > width {
+			width = w
+		}
+	}
+	return width
+}
+
+// renderSpread renders the 10Y-2Y spread in basis points. A negative spread is
+// the inverted-curve signal, so it is flagged explicitly instead of being
+// coloured by the yield convention: here the sign is the news, not a market
+// direction.
+func (m Model) renderSpread() string {
+	spread, ok := m.curve.SpreadBp("10Y", "2Y")
+	if !ok {
+		return mutedStyle.Render("  Spread 10Y-2Y: —")
+	}
+	bp := int(math.Round(spread))
+	text := fmt.Sprintf("  Spread 10Y-2Y: %s pb", formatBp(bp))
+	if bp < 0 {
+		return lossStyle.Render(text + " · curva invertida")
+	}
+	return rateStyle.Render(text)
+}
+
+// formatBp renders a basis-point change with an explicit sign: +20, -45, 0.
+// The digits themselves still come from formatNumber, so the dashboard keeps a
+// single es-AR number rule.
+func formatBp(bp int) string {
+	sign := ""
+	if bp > 0 {
+		sign = "+"
+	}
+	return sign + formatNumber(float64(bp), 0)
 }
 
 // renderBonds renders the sovereign bonds section with parity %.
@@ -408,6 +632,9 @@ func (m Model) lastSuccessAt() time.Time {
 	}
 	if m.bondsAt.After(latest) {
 		latest = m.bondsAt
+	}
+	if m.treasuryAt.After(latest) {
+		latest = m.treasuryAt
 	}
 	return latest
 }
