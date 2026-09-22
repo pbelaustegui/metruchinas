@@ -14,6 +14,7 @@ import (
 	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/riesgo"
+	"metruchinas/internal/tesoro"
 )
 
 func rate(v float64) *float64 { return &v }
@@ -26,6 +27,9 @@ func newTestModel(quotes QuotesFetcher, r RiesgoFetcher) Model {
 	m.fetchRiesgo = r
 	m.fetchBonds = func(ctx context.Context) ([]bonos.BondQuote, error) {
 		return nil, nil
+	}
+	m.fetchTreasury = func(ctx context.Context, force bool) (tesoro.Curve, error) {
+		return tesoro.Curve{}, nil
 	}
 	m.refreshing = false
 	return m
@@ -225,7 +229,7 @@ func TestRefreshCommandReportsPerSourceErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newTestModel(tt.quotes, tt.riesgo)
 
-			msg, ok := m.refresh()().(dataMsg)
+			msg, ok := m.refresh(false)().(dataMsg)
 			if !ok {
 				t.Fatal("refresh() command did not produce a dataMsg")
 			}
@@ -252,7 +256,7 @@ func TestRefreshCommandReportsPerSourceErrors(t *testing.T) {
 func TestRefreshCommandStoresBothSourcesOnSuccess(t *testing.T) {
 	m := newTestModel(okQuotes, okRiesgo)
 
-	msg, ok := m.refresh()().(dataMsg)
+	msg, ok := m.refresh(false)().(dataMsg)
 	if !ok {
 		t.Fatal("refresh() command did not produce a dataMsg")
 	}
@@ -290,7 +294,7 @@ func TestRefreshReportsExplicitTimeoutForSlowSource(t *testing.T) {
 	m := newTestModel(okQuotes, slowRiesgo)
 	m.timeout = 10 * time.Millisecond
 
-	msg, ok := m.refresh()().(dataMsg)
+	msg, ok := m.refresh(false)().(dataMsg)
 	if !ok {
 		t.Fatal("refresh() command did not produce a dataMsg")
 	}
@@ -317,7 +321,7 @@ func TestRefreshRejectsDataFromAnExpiredCycle(t *testing.T) {
 	m := newTestModel(ignoresContext, okRiesgo)
 	m.timeout = 10 * time.Millisecond
 
-	msg, ok := m.refresh()().(dataMsg)
+	msg, ok := m.refresh(false)().(dataMsg)
 	if !ok {
 		t.Fatal("refresh() command did not produce a dataMsg")
 	}
@@ -555,7 +559,7 @@ func TestRefreshCommandFetchesBonds(t *testing.T) {
 	m.fetchBonds = func(ctx context.Context) ([]bonos.BondQuote, error) {
 		return okBonds(), nil
 	}
-	cmd := m.refresh()
+	cmd := m.refresh(false)
 	msg := cmd().(dataMsg)
 	if len(msg.bonds) != 2 {
 		t.Errorf("expected 2 bonds in refresh result, got %d", len(msg.bonds))
@@ -769,5 +773,527 @@ func TestViewRendersBondVariationArrows(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("View() missing %q", want)
 		}
+	}
+}
+
+// curveYields are the curve levels the treasury tests render: the tenors the
+// plan of record probed live on 2026-09-21, plus realistic short-end fixtures.
+var curveYields = map[string]float64{
+	"1 Mo":      4.05,
+	"1.5 Month": 4.02,
+	"2 Mo":      4.03,
+	"3 Mo":      3.98,
+	"4 Mo":      3.95,
+	"6 Mo":      3.90,
+	"1 Yr":      4.45,
+	"2 Yr":      4.76,
+	"3 Yr":      4.64,
+	"5 Yr":      4.83,
+	"7 Yr":      4.90,
+	"10 Yr":     4.96,
+	"20 Yr":     5.33,
+	"30 Yr":     5.29,
+}
+
+// curveDeltas are the daily changes in basis points for curveYields.
+var curveDeltas = map[string]float64{
+	"1 Mo":      -3,
+	"1.5 Month": -3,
+	"2 Mo":      -3,
+	"3 Mo":      -3,
+	"4 Mo":      -2,
+	"6 Mo":      -1,
+	"1 Yr":      1,
+	"2 Yr":      -1,
+	"3 Yr":      2,
+	"5 Yr":      3,
+	"7 Yr":      4,
+	"10 Yr":     3,
+	"20 Yr":     0,
+	"30 Yr":     -4,
+}
+
+// curveDate is the publication date of the test curve.
+var curveDate = time.Date(2026, 9, 21, 0, 0, 0, 0, time.Local)
+
+// testCurve builds a curve from level and delta maps keyed by Treasury column
+// header, in the package's ascending tenor order. A level missing from yields is
+// not published; a tenor missing from deltas has an unknown change.
+func testCurve(yields, deltas map[string]float64) tesoro.Curve {
+	points := make([]tesoro.Point, 0, len(tesoro.Tenors()))
+	for _, tenor := range tesoro.Tenors() {
+		yield, ok := yields[tenor.Key]
+		if !ok {
+			continue
+		}
+		point := tesoro.Point{Tenor: tenor.Key, Label: tenor.Label, Yield: yield}
+		if delta, ok := deltas[tenor.Key]; ok {
+			d := delta
+			point.DeltaBp = &d
+		}
+		points = append(points, point)
+	}
+	return tesoro.Curve{Date: curveDate, Points: points}
+}
+
+func okCurve() tesoro.Curve { return testCurve(curveYields, curveDeltas) }
+
+// curveFetcher returns the curve without recording the force intent.
+func curveFetcher(curve tesoro.Curve) TreasuryFetcher {
+	return func(context.Context, bool) (tesoro.Curve, error) { return curve, nil }
+}
+
+// runCmds executes a command and, when it is a batch (Init and the tick
+// heartbeat both return one), every command inside it.
+func runCmds(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		return
+	}
+	for _, c := range batch {
+		if c != nil {
+			c()
+		}
+	}
+}
+
+func TestRefreshCommandFetchesTreasuryCurve(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.fetchTreasury = curveFetcher(okCurve())
+
+	msg, ok := m.refresh(false)().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() command did not produce a dataMsg")
+	}
+	if msg.treasuryErr != nil {
+		t.Fatalf("treasuryErr = %v, want nil", msg.treasuryErr)
+	}
+	if len(msg.curve.Points) != len(tesoro.Tenors()) {
+		t.Errorf("curve points = %d, want %d", len(msg.curve.Points), len(tesoro.Tenors()))
+	}
+	if !msg.curve.Date.Equal(curveDate) {
+		t.Errorf("curve date = %v, want %v", msg.curve.Date, curveDate)
+	}
+}
+
+func TestRefreshRecordsTheForceIntent(t *testing.T) {
+	// The cache invalidates on `r` only. The fetcher signature carries the
+	// intent, so the model needs no extra flag to express it.
+	var forced []bool
+	m := newTestModel(okQuotes, okRiesgo)
+	m.fetchTreasury = func(_ context.Context, force bool) (tesoro.Curve, error) {
+		forced = append(forced, force)
+		return okCurve(), nil
+	}
+
+	// The heartbeat and the r key both answer with a command (the heartbeat
+	// batches the next tick with the refresh), so the intent is observed by
+	// running them. A short interval keeps the batched tick from stalling the
+	// test.
+	m.interval = time.Millisecond
+
+	if _, tick := m.Update(tickMsg(time.Now())); tick != nil {
+		runCmds(tick)
+	}
+	rKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	if _, press := m.Update(rKey); press != nil {
+		runCmds(press)
+	}
+
+	if len(forced) != 2 {
+		t.Fatalf("fetcher called %d times, want 2", len(forced))
+	}
+
+	if forced[0] {
+		t.Error("tick asked for a forced refetch, want the cached curve")
+	}
+	if !forced[1] {
+		t.Error("the r key did not ask for a forced refetch")
+	}
+}
+
+func TestUpdateStoresTreasuryCurve(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.treasuryErr = errors.New("previous failure")
+
+	updated, _ := m.Update(dataMsg{curve: okCurve(), fetchedAt: staleAt})
+	m = updated.(Model)
+
+	if m.treasuryErr != nil {
+		t.Errorf("treasuryErr = %v, want nil after a successful fetch", m.treasuryErr)
+	}
+	if len(m.curve.Points) != len(tesoro.Tenors()) {
+		t.Errorf("curve points = %d, want %d", len(m.curve.Points), len(tesoro.Tenors()))
+	}
+	if !m.treasuryAt.Equal(staleAt) {
+		t.Errorf("treasuryAt = %v, want %v", m.treasuryAt, staleAt)
+	}
+}
+
+func TestUpdateKeepsTreasuryFailureIsolated(t *testing.T) {
+	boom := errors.New("treasury down")
+
+	t.Run("treasury fails, the other sections survive", func(t *testing.T) {
+		m := newTestModel(okQuotes, okRiesgo)
+		quotes, _ := okQuotes(context.Background())
+		ind, _ := okRiesgo(context.Background())
+		updated, _ := m.Update(dataMsg{
+			quotes:      quotes,
+			riesgo:      ind,
+			bonds:       okBonds(),
+			treasuryErr: boom,
+			fetchedAt:   time.Now(),
+		})
+		m = updated.(Model)
+
+		if !errors.Is(m.treasuryErr, boom) {
+			t.Errorf("treasuryErr = %v, want %v", m.treasuryErr, boom)
+		}
+		if len(m.quotes) != 4 || m.riesgo.Value != 515 || len(m.bonds) != 2 {
+			t.Error("a treasury failure blanked another section")
+		}
+	})
+
+	t.Run("another source fails, the treasury curve survives", func(t *testing.T) {
+		m := newTestModel(okQuotes, okRiesgo)
+		updated, _ := m.Update(dataMsg{
+			curve:     okCurve(),
+			quotesErr: boom,
+			fetchedAt: time.Now(),
+		})
+		m = updated.(Model)
+		if !errors.Is(m.quotesErr, boom) {
+			t.Errorf("quotesErr = %v, want %v", m.quotesErr, boom)
+		}
+		if len(m.curve.Points) != len(tesoro.Tenors()) {
+			t.Error("the treasury curve was dropped when another source failed")
+		}
+		if m.treasuryErr != nil {
+			t.Errorf("treasuryErr = %v, want nil", m.treasuryErr)
+		}
+	})
+}
+
+func TestViewRendersTreasuryCurve(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), fetchedAt: staleAt})
+	m = updated.(Model)
+	view := m.View()
+
+	if !strings.Contains(view, "Curva del Tesoro") {
+		t.Error("View() is missing the treasury section header")
+	}
+	if !strings.Contains(view, "21-09-2026") {
+		t.Error("View() is missing the Treasury publication date")
+	}
+	for _, tenor := range tesoro.Tenors() {
+		if !strings.Contains(view, tenor.Label) {
+			t.Errorf("View() is missing tenor %q", tenor.Label)
+		}
+	}
+	for _, want := range []string{"4,96", "4,76", "5,33", "4,45", "Spread 10Y-2Y: +20 pb"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() is missing %q", want)
+		}
+	}
+}
+
+func TestViewRendersTreasuryLevelsInEsARFormat(t *testing.T) {
+	// The level column reuses the dashboard's number formatting: comma decimals,
+	// and never a dot decimal separator.
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), fetchedAt: staleAt})
+	rows := updated.(Model).renderCurveRows()
+
+	if strings.Contains(rows, "4.96") {
+		t.Errorf("curve rows use a dot decimal separator:\n%s", rows)
+	}
+	if !strings.Contains(rows, "4,96") {
+		t.Errorf("curve rows are missing the es-AR level:\n%s", rows)
+	}
+	// The tenor label follows the same rule as every number the dashboard
+	// prints, even though Treasury spells the column "1.5 Month".
+	if !strings.Contains(rows, "1,5M") {
+		t.Errorf("curve rows are missing the es-AR tenor label:\n%s", rows)
+	}
+	if strings.Contains(rows, "1.5M") {
+		t.Errorf("curve rows use a dot decimal separator in the tenor label:\n%s", rows)
+	}
+}
+
+func TestViewRendersTreasuryDeltaDirectection(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), fetchedAt: staleAt})
+	rows := updated.(Model).renderCurveRows()
+
+	for _, want := range []string{"▲  3", "▼  1", "▼  4"} {
+		if !strings.Contains(rows, want) {
+			t.Errorf("curve rows are missing %q:\n%s", want, rows)
+		}
+	}
+	// A zero change is neither rising nor falling.
+	if !strings.Contains(rows, "·  0") {
+		t.Errorf("curve rows are missing the flat marker:\n%s", rows)
+	}
+}
+
+func TestCurveDeltaColorFollowsTheYieldConvention(t *testing.T) {
+	// Yields follow the market convention: a rising yield is red, a falling one
+	// is green, and a flat one is muted rather than coloured. The assertions are
+	// on the observable foreground colour, not on style identity: comparing
+	// against upStyle would keep passing if upStyle itself were changed to blue,
+	// which is exactly the regression this is here to catch.
+	cases := []struct {
+		name string
+		bp   int
+		want lipgloss.Color
+	}{
+		{"a rising yield is red", 3, lipgloss.Color("9")},
+		{"a falling yield is green", -1, lipgloss.Color("10")},
+		{"a flat yield is muted grey", 0, lipgloss.Color("241")},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := curveDeltaStyle(tt.bp).GetForeground(); got != lipgloss.TerminalColor(tt.want) {
+				t.Errorf("curveDeltaStyle(%d) foreground = %v, want %v", tt.bp, got, tt.want)
+			}
+		})
+	}
+
+	// Whatever the palette is, the two directions must never share a colour.
+	if curveDeltaStyle(1).GetForeground() == curveDeltaStyle(-1).GetForeground() {
+		t.Error("a rising and a falling yield render in the same colour")
+	}
+}
+
+func TestViewRendersMissingTenorAsDash(t *testing.T) {
+	yields := map[string]float64{}
+	for key, value := range curveYields {
+		yields[key] = value
+	}
+	delete(yields, "10 Yr")
+	delete(yields, "5 Yr")
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: testCurve(yields, curveDeltas), fetchedAt: staleAt})
+	rows := updated.(Model).renderCurveRows()
+
+	if !strings.Contains(rows, "10Y") {
+		t.Errorf("a missing tenor must still occupy its slot:\n%s", rows)
+	}
+	for _, missing := range []string{"4,96", "4,83"} {
+		if strings.Contains(rows, missing) {
+			t.Errorf("an unpublished tenor rendered the level %q:\n%s", missing, rows)
+		}
+	}
+	for _, want := range []string{"4,76", "4,90"} {
+		if !strings.Contains(rows, want) {
+			t.Errorf("curve rows are missing the neighbouring level %q:\n%s", want, rows)
+		}
+	}
+}
+
+func TestCurveColumnsAlignAcrossEveryRow(t *testing.T) {
+	// The right column starts at one fixed display column on every row, whether
+	// or not the tenor in it was published. The prefix carries SGR codes, which
+	// Width ignores.
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), fetchedAt: staleAt})
+	m = updated.(Model)
+
+	tenors := tesoro.Tenors()
+	rowsPerColumn := (len(tenors) + 1) / 2
+	lines := strings.Split(m.renderCurveRows(), "\n")
+	if len(lines) != rowsPerColumn {
+		t.Fatalf("renderCurveRows() returned %d lines, want %d", len(lines), rowsPerColumn)
+	}
+
+	// The right column starts at one absolute display cell on every row: the
+	// left cell's geometry (2 indent + 4 label + 2 + 5 yield + 2 + 4 delta = 19
+	// display cells) plus the 3-cell gap between the columns. Taking row 0 as its
+	// own reference would keep passing even if every row were shifted together,
+	// which is how a wrong "cell 24" claim survived in the tracker.
+	const wantRightColumnCell = 22
+	if want := 2 + curveLabelWidth(tenors) + 2 + curveYieldWidth + 2 + curveDeltaWidth + len(curveColumnGap); want != wantRightColumnCell {
+		t.Errorf("curve layout puts the right column at cell %d, want %d", want, wantRightColumnCell)
+	}
+	const want = wantRightColumnCell
+	for i, line := range lines {
+		label := tenors[i+rowsPerColumn].Label
+		idx := strings.Index(line, label)
+		if idx < 0 {
+			t.Fatalf("row %d is missing the right column tenor %q: %q", i, label, line)
+		}
+		if start := lipgloss.Width(line[:idx]); start != want {
+			t.Errorf("row %d starts its right column at cell %d, want %d: %q", i, start, want, line)
+		}
+	}
+
+	// The dash for an unpublished tenor must not shift the column either.
+	yields := map[string]float64{}
+	for key, value := range curveYields {
+		yields[key] = value
+	}
+	delete(yields, "3 Yr")
+	m.curve = testCurve(yields, curveDeltas)
+	for i, line := range strings.Split(m.renderCurveRows(), "\n") {
+		label := tenors[i+rowsPerColumn].Label
+		idx := strings.Index(line, label)
+		if idx < 0 {
+			t.Fatalf("with a missing tenor, row %d is missing the right column tenor %q: %q", i, label, line)
+		}
+		if start := lipgloss.Width(line[:idx]); start != want {
+			t.Errorf("with a missing tenor, row %d starts its right column at cell %d, want %d: %q", i, start, want, line)
+		}
+	}
+}
+
+func TestCurveSectionFitsInNineLines(t *testing.T) {
+	// Two columns of seven tenors keep the curve inside nine lines; a single
+	// column would push the whole dashboard out of a terminal.
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), fetchedAt: staleAt})
+	m = updated.(Model)
+
+	lines := strings.Split(m.renderTreasury(), "\n")
+	if len(lines) != 9 {
+		t.Errorf("renderTreasury() returned %d lines, want 9 (header + 7 rows + spread):\n%s", len(lines), m.renderTreasury())
+	}
+}
+
+func TestViewFlagsAnInvertedCurve(t *testing.T) {
+	yields := map[string]float64{}
+	for key, value := range curveYields {
+		yields[key] = value
+	}
+	yields["10 Yr"] = 4.31
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: testCurve(yields, curveDeltas), fetchedAt: staleAt})
+	view := updated.(Model).View()
+
+	if !strings.Contains(view, "Spread 10Y-2Y: -45 pb") {
+		t.Errorf("View() is missing the negative spread:\n%s", view)
+	}
+	if !strings.Contains(view, "curva invertida") {
+		t.Errorf("View() does not flag the inverted curve:\n%s", view)
+	}
+}
+
+func TestViewRendersStaleTreasuryCurve(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), fetchedAt: staleAt})
+	m = updated.(Model)
+	m.treasuryErr = errors.New("treasury timeout")
+
+	view := m.View()
+	for _, want := range []string{"4,96", "21-09-2026", "treasury timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() is missing %q for the stale curve", want)
+		}
+	}
+	if !m.treasuryAt.Equal(staleAt) {
+		t.Errorf("treasuryAt = %v, want the last success %v", m.treasuryAt, staleAt)
+	}
+}
+
+func TestViewTreasuryUnavailableWithoutData(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.loaded = true
+	m.treasuryErr = errors.New("treasury timeout")
+	quotes, _ := okQuotes(context.Background())
+	m.quotes = quotes
+
+	view := m.View()
+	if !strings.Contains(view, "treasury timeout") {
+		t.Errorf("View() is missing the treasury error:\n%s", view)
+	}
+	if strings.Contains(view, "desactualizado") {
+		t.Error("View() claims stale curve data although none was ever fetched")
+	}
+	if !strings.Contains(view, "Oficial") {
+		t.Error("a treasury failure blanked the dolar section")
+	}
+}
+
+func TestViewShowsTreasuryLoadingBeforeFirstData(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	if view := m.renderTreasury(); !strings.Contains(view, "cargando") {
+		t.Errorf("renderTreasury() = %q, want a loading placeholder before the first fetch", view)
+	}
+	if view := m.View(); !strings.Contains(view, "Curva del Tesoro") {
+		t.Error("View() must show the section header while the first fetch is in flight")
+	}
+}
+
+func TestRefreshFetchesTheCurveOncePerBusinessDay(t *testing.T) {
+	// The dashboard never de-duplicates by itself: it asks the injected fetcher
+	// on every cycle and the publication cache decides whether that costs a
+	// request. The clock moves across a real release boundary, so this fails if
+	// the schedule degrades into a fixed TTL — a TTL longer than the window
+	// would cost one request, and no schedule at all would cost four.
+	//
+	// 2026-09-21 is a Monday and its release is 16:00 EDT, which is 20:00 UTC.
+	cycles := []struct {
+		at       time.Time
+		requests int
+	}{
+		{time.Date(2026, 9, 21, 18, 0, 0, 0, time.UTC), 1},  // 14:00 EDT, cold cache
+		{time.Date(2026, 9, 21, 19, 59, 0, 0, time.UTC), 1}, // 15:59 EDT, before the release
+		{time.Date(2026, 9, 21, 20, 1, 0, 0, time.UTC), 2},  // 16:01 EDT, past the release
+		{time.Date(2026, 9, 21, 20, 30, 0, 0, time.UTC), 2}, // 16:30 EDT, served from the cache
+	}
+
+	clock := cycles[0].at
+	requests := 0
+	cache := tesoro.NewPublisherCache(func(context.Context) (tesoro.Curve, error) {
+		requests++
+		return okCurve(), nil
+	})
+	cache.Now = func() time.Time { return clock }
+
+	m := newTestModel(okQuotes, okRiesgo)
+	m.fetchTreasury = cache.Get
+
+	for i, cycle := range cycles {
+		clock = cycle.at
+		msg, ok := m.refresh(false)().(dataMsg)
+		if !ok {
+			t.Fatal("refresh() command did not produce a dataMsg")
+		}
+		if msg.treasuryErr != nil {
+			t.Fatalf("cycle %d at %s: treasuryErr = %v", i, cycle.at.Format(time.RFC3339), msg.treasuryErr)
+		}
+		if len(msg.curve.Points) != len(tesoro.Tenors()) {
+			t.Fatalf("cycle %d at %s: curve points = %d, want %d", i, cycle.at.Format(time.RFC3339), len(msg.curve.Points), len(tesoro.Tenors()))
+		}
+		if requests != cycle.requests {
+			t.Errorf("cycle %d at %s: source requests = %d, want %d", i, cycle.at.Format(time.RFC3339), requests, cycle.requests)
+		}
+	}
+}
+
+func TestRefreshReportsTreasuryTimeoutLikeEveryOtherSource(t *testing.T) {
+	slow := func(ctx context.Context, _ bool) (tesoro.Curve, error) {
+		<-time.After(50 * time.Millisecond)
+		return okCurve(), nil
+	}
+	m := newTestModel(okQuotes, okRiesgo)
+	m.fetchTreasury = slow
+	m.timeout = 10 * time.Millisecond
+
+	msg, ok := m.refresh(false)().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() command did not produce a dataMsg")
+	}
+	if msg.treasuryErr == nil {
+		t.Fatal("treasuryErr = nil, want an explicit timeout for the slow source")
+	}
+	if !errors.Is(msg.treasuryErr, context.DeadlineExceeded) {
+		t.Errorf("treasuryErr = %v, want it to wrap context.DeadlineExceeded", msg.treasuryErr)
+	}
+	if msg.quotesErr != nil {
+		t.Errorf("quotesErr = %v, want the fast source to survive", msg.quotesErr)
 	}
 }
