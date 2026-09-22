@@ -376,12 +376,14 @@ func (m Model) renderBondRows() string {
 			tvStr = "—"
 		}
 
-		// Variation arrow.
+		// Variation arrow. Bonds follow the market convention: green when the
+		// price rises, red when it falls. (Country risk is the opposite: a
+		// falling EMBI is good news, so riesgo swaps these styles.)
 		var varStr string
 		if bq.Variacion > 0 {
-			varStr = upStyle.Render(fmt.Sprintf("▲ %.2f%%", bq.Variacion))
+			varStr = variationStyle(bq.Variacion).Render(fmt.Sprintf("▲ %.2f%%", bq.Variacion))
 		} else if bq.Variacion < 0 {
-			varStr = downStyle.Render(fmt.Sprintf("▼ %.2f%%", bq.Variacion))
+			varStr = variationStyle(bq.Variacion).Render(fmt.Sprintf("▼ %.2f%%", bq.Variacion))
 		} else {
 			varStr = mutedStyle.Render(fmt.Sprintf("  %.2f%%", bq.Variacion))
 		}
@@ -408,6 +410,15 @@ func (m Model) lastSuccessAt() time.Time {
 		latest = m.bondsAt
 	}
 	return latest
+}
+
+// variationStyle returns the style for a bond price variation following the
+// market convention: green when positive, red when negative.
+func variationStyle(v float64) lipgloss.Style {
+	if v < 0 {
+		return lossStyle
+	}
+	return gainStyle
 }
 
 func (m Model) renderFooter() string {
@@ -506,4 +517,6 @@ var (
 	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	upStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	downStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	gainStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	lossStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
