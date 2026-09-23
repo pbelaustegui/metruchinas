@@ -13,6 +13,7 @@ import (
 
 	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
+	"metruchinas/internal/fed"
 	"metruchinas/internal/riesgo"
 	"metruchinas/internal/tesoro"
 )
@@ -30,6 +31,9 @@ func newTestModel(quotes QuotesFetcher, r RiesgoFetcher) Model {
 	}
 	m.fetchTreasury = func(ctx context.Context, force bool) (tesoro.Curve, error) {
 		return tesoro.Curve{}, nil
+	}
+	m.fetchFed = func(ctx context.Context, force bool) (fed.Rate, error) {
+		return okFed(), nil
 	}
 	m.refreshing = false
 	return m
@@ -57,6 +61,22 @@ func okBonds() []bonos.BondQuote {
 	return []bonos.BondQuote{
 		{Ticker: "GD30", Ultimo: 57.57, Variacion: -2.86},
 		{Ticker: "GD29", Ultimo: 55.52, Variacion: 1.50},
+	}
+}
+
+// fedDelta is the EFFR daily change used by the fed fixtures; a fixed value
+// keeps every fed assertion off a shared pointer.
+func fedDelta(v float64) *float64 { return &v }
+
+// okFed is the reference rate the plan of record probed live on 2026-09-23: an
+// FOMC target range of 3.75%-4.00% and an EFFR of 3.88% observed on 2026-09-21.
+func okFed() fed.Rate {
+	return fed.Rate{
+		Date:             time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
+		TargetLow:        3.75,
+		TargetHigh:       4.00,
+		Effective:        3.88,
+		EffectiveDeltaBp: fedDelta(25),
 	}
 }
 
@@ -1150,16 +1170,17 @@ func TestCurveColumnsAlignAcrossEveryRow(t *testing.T) {
 	}
 }
 
-func TestCurveSectionFitsInNineLines(t *testing.T) {
-	// Two columns of seven tenors keep the curve inside nine lines; a single
-	// column would push the whole dashboard out of a terminal.
+func TestCurveSectionFitsInTenLines(t *testing.T) {
+	// Two columns of seven tenors keep the curve inside ten lines; a single
+	// column would push the whole dashboard out of a terminal. The tenth line is
+	// the Federal Reserve reference rate appended inside the section.
 	m := newTestModel(okQuotes, okRiesgo)
-	updated, _ := m.Update(dataMsg{curve: okCurve(), fetchedAt: staleAt})
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), fetchedAt: staleAt})
 	m = updated.(Model)
 
 	lines := strings.Split(m.renderTreasury(), "\n")
-	if len(lines) != 9 {
-		t.Errorf("renderTreasury() returned %d lines, want 9 (header + 7 rows + spread):\n%s", len(lines), m.renderTreasury())
+	if len(lines) != 10 {
+		t.Errorf("renderTreasury() returned %d lines, want 10 (header + 7 rows + spread + fed):\n%s", len(lines), m.renderTreasury())
 	}
 }
 
@@ -1295,5 +1316,287 @@ func TestRefreshReportsTreasuryTimeoutLikeEveryOtherSource(t *testing.T) {
 	}
 	if msg.quotesErr != nil {
 		t.Errorf("quotesErr = %v, want the fast source to survive", msg.quotesErr)
+	}
+}
+
+func TestRefreshCommandFetchesFedRate(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	var forced []bool
+	m.fetchFed = func(_ context.Context, force bool) (fed.Rate, error) {
+		forced = append(forced, force)
+		return okFed(), nil
+	}
+
+	msg, ok := m.refresh(false)().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() command did not produce a dataMsg")
+	}
+	if msg.fedErr != nil {
+		t.Fatalf("fedErr = %v, want nil", msg.fedErr)
+	}
+	if msg.rate.Effective != 3.88 || msg.rate.TargetLow != 3.75 || msg.rate.TargetHigh != 4.00 {
+		t.Errorf("rate = %+v, want the fetched reference rate", msg.rate)
+	}
+	if len(forced) != 1 || forced[0] {
+		t.Errorf("force intents = %v, want one non-forced call", forced)
+	}
+}
+
+func TestRefreshRecordsTheFedForceIntent(t *testing.T) {
+	// Like the curve, the Fed cache invalidates on `r` only. The fetcher
+	// signature carries the intent, so the model needs no extra flag for it.
+	var forced []bool
+	m := newTestModel(okQuotes, okRiesgo)
+	m.fetchFed = func(_ context.Context, force bool) (fed.Rate, error) {
+		forced = append(forced, force)
+		return okFed(), nil
+	}
+	m.interval = time.Millisecond
+
+	if _, tick := m.Update(tickMsg(time.Now())); tick != nil {
+		runCmds(tick)
+	}
+	rKey := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	if _, press := m.Update(rKey); press != nil {
+		runCmds(press)
+	}
+
+	if len(forced) != 2 {
+		t.Fatalf("fed fetcher called %d times, want 2", len(forced))
+	}
+	if forced[0] {
+		t.Error("tick asked for a forced fed refetch, want the cached rate")
+	}
+	if !forced[1] {
+		t.Error("the r key did not ask for a forced fed refetch")
+	}
+}
+
+func TestRefreshReportsFedTimeoutLikeEveryOtherSource(t *testing.T) {
+	slow := func(ctx context.Context, _ bool) (fed.Rate, error) {
+		<-time.After(50 * time.Millisecond)
+		return okFed(), nil
+	}
+	m := newTestModel(okQuotes, okRiesgo)
+	m.fetchFed = slow
+	m.timeout = 10 * time.Millisecond
+
+	msg, ok := m.refresh(false)().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() command did not produce a dataMsg")
+	}
+	if msg.fedErr == nil {
+		t.Fatal("fedErr = nil, want an explicit timeout for the slow source")
+	}
+	if !errors.Is(msg.fedErr, context.DeadlineExceeded) {
+		t.Errorf("fedErr = %v, want it to wrap context.DeadlineExceeded", msg.fedErr)
+	}
+	if msg.quotesErr != nil {
+		t.Errorf("quotesErr = %v, want the fast source to survive", msg.quotesErr)
+	}
+}
+
+func TestUpdateStoresFedRate(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.fedErr = errors.New("previous failure")
+
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), fetchedAt: staleAt})
+	m = updated.(Model)
+
+	if m.fedErr != nil {
+		t.Errorf("fedErr = %v, want nil after a successful fetch", m.fedErr)
+	}
+	if m.rate.Effective != 3.88 {
+		t.Errorf("rate.Effective = %v, want 3.88", m.rate.Effective)
+	}
+	if !m.fedAt.Equal(staleAt) {
+		t.Errorf("fedAt = %v, want %v", m.fedAt, staleAt)
+	}
+}
+
+func TestUpdateKeepsFedFailureIsolated(t *testing.T) {
+	boom := errors.New("fed down")
+
+	t.Run("fed fails, the curve and quotes survive", func(t *testing.T) {
+		m := newTestModel(okQuotes, okRiesgo)
+		quotes, _ := okQuotes(context.Background())
+		updated, _ := m.Update(dataMsg{
+			quotes:    quotes,
+			curve:     okCurve(),
+			fedErr:    boom,
+			fetchedAt: staleAt,
+		})
+		m = updated.(Model)
+
+		if !errors.Is(m.fedErr, boom) {
+			t.Errorf("fedErr = %v, want %v", m.fedErr, boom)
+		}
+		if len(m.curve.Points) != len(tesoro.Tenors()) {
+			t.Error("a fed failure blanked the treasury curve")
+		}
+		if len(m.quotes) != 4 {
+			t.Error("a fed failure blanked the dollar section")
+		}
+	})
+
+	t.Run("the curve and quotes fail, fed survives", func(t *testing.T) {
+		m := newTestModel(okQuotes, okRiesgo)
+		updated, _ := m.Update(dataMsg{
+			rate:        okFed(),
+			quotesErr:   boom,
+			treasuryErr: boom,
+			fetchedAt:   staleAt,
+		})
+		m = updated.(Model)
+
+		if m.fedErr != nil {
+			t.Errorf("fedErr = %v, want nil", m.fedErr)
+		}
+		if m.rate.Effective != 3.88 {
+			t.Error("the fed rate was dropped when the other sources failed")
+		}
+		if !m.fedAt.Equal(staleAt) {
+			t.Errorf("fedAt = %v, want %v", m.fedAt, staleAt)
+		}
+	})
+
+	t.Run("the curve never loaded, fed still renders", func(t *testing.T) {
+		// A curve that failed before its first success must not hide a rate
+		// that did load: the two sources are independent.
+		m := newTestModel(okQuotes, okRiesgo)
+		updated, _ := m.Update(dataMsg{rate: okFed(), treasuryErr: errors.New("treasury down"), fetchedAt: staleAt})
+		m = updated.(Model)
+
+		view := m.View()
+		for _, want := range []string{"no disponible", "Tasa FED", "3,75%", "3,88%"} {
+			if !strings.Contains(view, want) {
+				t.Errorf("View() missing %q although the fed rate loaded:\n%s", want, view)
+			}
+		}
+	})
+}
+
+func TestViewRendersFedLine(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), fetchedAt: staleAt})
+	m = updated.(Model)
+	view := m.View()
+
+	for _, want := range []string{"Tasa FED", "3,75% – 4,00%", "efectiva", "3,88%", "▲ +25 pb", "21-09-2026"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() is missing %q for the fed line:\n%s", want, view)
+		}
+	}
+}
+
+func TestViewRendersFedInEsARFormat(t *testing.T) {
+	// The fed line reuses the dashboard's number formatting: comma decimals,
+	// never a dot decimal separator.
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), fetchedAt: staleAt})
+	line := updated.(Model).renderFed()
+
+	if strings.Contains(line, "3.75") || strings.Contains(line, "4.00") || strings.Contains(line, "3.88") {
+		t.Errorf("fed line uses a dot decimal separator: %q", line)
+	}
+	for _, want := range []string{"3,75%", "4,00%", "3,88%"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("fed line is missing the es-AR value %q: %q", want, line)
+		}
+	}
+}
+
+func TestRenderFedDeltaDirections(t *testing.T) {
+	cases := []struct {
+		name    string
+		delta   *float64
+		want    string
+		wantNot string
+	}{
+		{"rising rate", fedDelta(25), "▲ +25 pb", ""},
+		{"falling rate", fedDelta(-25), "▼ -25 pb", ""},
+		{"flat rate", fedDelta(0), "· 0 pb", ""},
+		{"unknown change", nil, "—", "pb"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestModel(okQuotes, okRiesgo)
+			m.loaded = true
+			m.fedAt = staleAt
+			m.rate = okFed()
+			m.rate.EffectiveDeltaBp = tt.delta
+
+			line := m.renderFed()
+			if !strings.Contains(line, tt.want) {
+				t.Errorf("renderFed() = %q, want it to contain %q", line, tt.want)
+			}
+			if tt.wantNot != "" && strings.Contains(line, tt.wantNot) {
+				t.Errorf("renderFed() = %q, want no %q for an unknown change", line, tt.wantNot)
+			}
+		})
+	}
+}
+
+func TestRenderFedKeepsTheDeltaOnTheYieldConvention(t *testing.T) {
+	// The EFFR change follows the same convention as every yield: a rising rate
+	// is red and a falling one green. The assertion is on the observable
+	// foreground colour, so a fed-specific style that drifted would fail it.
+	if got := curveDeltaStyle(25).GetForeground(); got != lipgloss.TerminalColor(lipgloss.Color("9")) {
+		t.Errorf("rising fed change foreground = %v, want red 9", got)
+	}
+	if got := curveDeltaStyle(-25).GetForeground(); got != lipgloss.TerminalColor(lipgloss.Color("10")) {
+		t.Errorf("falling fed change foreground = %v, want green 10", got)
+	}
+}
+
+func TestViewRendersStaleFedRate(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), fetchedAt: staleAt})
+	m = updated.(Model)
+	m.fedErr = errors.New("fed timeout")
+
+	view := m.View()
+	for _, want := range []string{"3,75%", "3,88%", "21-09-2026", "fed timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("View() is missing %q for the stale fed rate:\n%s", want, view)
+		}
+	}
+	// The curve is unaffected by the fed failure and stays on screen.
+	if !strings.Contains(view, "Spread 10Y-2Y: +20 pb") {
+		t.Errorf("View() lost the curve when the fed refresh failed:\n%s", view)
+	}
+	if lines := strings.Split(m.renderFed(), "\n"); len(lines) != 2 {
+		t.Errorf("renderFed() returned %d lines for stale data, want value + note:\n%s", len(lines), m.renderFed())
+	}
+}
+
+func TestRenderFedShowsLoadingAndEmptyStates(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	if got := m.renderFed(); !strings.Contains(got, "cargando") {
+		t.Errorf("renderFed() = %q, want a loading placeholder before the first fetch", got)
+	}
+
+	m.loaded = true
+	if got := m.renderFed(); !strings.Contains(got, "sin datos") {
+		t.Errorf("renderFed() = %q, want the empty state after a loaded cycle with no rate", got)
+	}
+}
+
+func TestViewFedUnavailableWithoutData(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.loaded = true
+	m.fedErr = errors.New("fed timeout")
+	m.curve = okCurve()
+	m.treasuryAt = staleAt
+
+	view := m.View()
+	if !strings.Contains(view, "fed timeout") {
+		t.Errorf("View() is missing the fed error:\n%s", view)
+	}
+	if strings.Contains(view, "desactualizado") && !strings.Contains(view, "últimos datos") {
+		t.Error("View() renders a malformed stale note")
+	}
+	if !strings.Contains(view, "Spread 10Y-2Y") {
+		t.Error("a fed failure blanked the curve")
 	}
 }

@@ -1,6 +1,6 @@
 // Package tui renders the macroeconomic indicator dashboard: USD/ARS quotes,
-// the Argentine country-risk index, the sovereign GD bond parity table, and the
-// US Treasury par yield curve.
+// the Argentine country-risk index, the sovereign GD bond parity table, the US
+// Treasury par yield curve, and the Federal Reserve reference rate.
 //
 // The model is a plain Bubbletea model with injected fetchers, so state
 // transitions can be tested by calling Update directly with messages.
@@ -18,6 +18,7 @@ import (
 
 	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
+	"metruchinas/internal/fed"
 	"metruchinas/internal/riesgo"
 	"metruchinas/internal/tesoro"
 )
@@ -50,6 +51,12 @@ type BondsFetcher func(ctx context.Context) ([]bonos.BondQuote, error)
 // cache decides whether the request is needed at all.
 type TreasuryFetcher func(ctx context.Context, force bool) (tesoro.Curve, error)
 
+// FedFetcher retrieves the Federal Reserve reference rate. It matches
+// fed.Cache.Get: force asks for a refetch instead of the cached rate, so `r`
+// reaches the calendar-day cache the same way it reaches the curve's. On every
+// other cycle the cache decides whether a request is needed at all.
+type FedFetcher func(ctx context.Context, force bool) (fed.Rate, error)
+
 // dataMsg carries the outcome of one refresh cycle. Each source reports its
 // own error so a failing source never hides the other one's data.
 type dataMsg struct {
@@ -61,6 +68,8 @@ type dataMsg struct {
 	bondsErr    error
 	curve       tesoro.Curve
 	treasuryErr error
+	rate        fed.Rate
+	fedErr      error
 	fetchedAt   time.Time
 }
 
@@ -77,18 +86,23 @@ type Model struct {
 	bondsErr    error
 	curve       tesoro.Curve
 	treasuryErr error
-	// quotesAt, riesgoAt, bondsAt and treasuryAt are the wall-clock times of the
-	// last successful fetch per source. They power stale rendering: a failing
-	// refresh keeps the last good data on screen and says how old it is.
+	rate        fed.Rate
+	fedErr      error
+	// quotesAt, riesgoAt, bondsAt, treasuryAt and fedAt are the wall-clock
+	// times of the last successful fetch per source. They power stale rendering:
+	// a failing refresh keeps the last good data on screen and says how old it
+	// is.
 	quotesAt      time.Time
 	riesgoAt      time.Time
 	bondsAt       time.Time
 	treasuryAt    time.Time
+	fedAt         time.Time
 	refreshing    bool
 	fetchQuotes   QuotesFetcher
 	fetchRiesgo   RiesgoFetcher
 	fetchBonds    BondsFetcher
 	fetchTreasury TreasuryFetcher
+	fetchFed      FedFetcher
 	interval      time.Duration
 	timeout       time.Duration
 	loaded        bool
@@ -103,6 +117,10 @@ func New() Model {
 	// publication cache: without it the 30-second heartbeat would re-download
 	// the same year of CSV all day long.
 	curveCache := tesoro.NewPublisherCache(tesoro.NewClient().Fetch)
+	// The reference rate is published daily, but the dashboard cannot know the
+	// FOMC calendar, so it is wrapped in a calendar-day cache: one request per
+	// day, whichever source refresh happens to be the first.
+	fedCache := fed.NewDailyCache(fed.NewClient().Fetch)
 	return Model{
 		fetchQuotes: dc.Fetch,
 		fetchRiesgo: rc.Fetch,
@@ -110,6 +128,7 @@ func New() Model {
 			return bc.Fetch(ctx, bondTickers...)
 		},
 		fetchTreasury: curveCache.Get,
+		fetchFed:      fedCache.Get,
 		interval:      DefaultRefreshInterval,
 		timeout:       fetchTimeout,
 		refreshing:    true,
@@ -176,6 +195,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.curve, m.treasuryErr = msg.curve, nil
 			m.treasuryAt = msg.fetchedAt
 		}
+		if msg.fedErr != nil {
+			m.fedErr = msg.fedErr
+		} else {
+			m.rate, m.fedErr = msg.rate, nil
+			m.fedAt = msg.fetchedAt
+		}
 		return m, nil
 	}
 	return m, nil
@@ -229,6 +254,15 @@ func (m Model) refresh(force bool) tea.Cmd {
 			msg.treasuryErr = err
 		} else {
 			msg.curve = curve
+		}
+		rate, err := m.fetchFed(ctx, force)
+		if err == nil {
+			err = timeoutErr(ctx, "fed", timeout)
+		}
+		if err != nil {
+			msg.fedErr = err
+		} else {
+			msg.rate = rate
 		}
 		return msg
 	}
@@ -364,11 +398,13 @@ const (
 
 // renderTreasury renders the US Treasury par yield curve: the publication date
 // in the section header, two columns of seven tenors carrying each level and
-// its daily change in basis points, and the 10Y-2Y spread underneath.
+// its daily change in basis points, the 10Y-2Y spread underneath, and the
+// Federal Reserve reference rate that anchors the short end.
 //
-// Two columns keep the section inside nine lines. A single column of fourteen
+// Two columns keep the section inside ten lines. A single column of fourteen
 // rows would add eight more lines to a dashboard that already runs past an
-// 80x24 terminal.
+// 80x24 terminal. The Fed line is rendered last and owns its own loading, stale
+// and error states, so a Fed failure never blanks the curve and vice versa.
 func (m Model) renderTreasury() string {
 	var b strings.Builder
 	b.WriteString(sectionStyle.Render(treasurySectionTitle))
@@ -377,29 +413,92 @@ func (m Model) renderTreasury() string {
 	}
 	b.WriteByte('\n')
 
-	if m.treasuryErr != nil && m.treasuryAt.IsZero() {
+	switch {
+	case m.treasuryErr != nil && m.treasuryAt.IsZero():
 		b.WriteString(errorStyle.Render("  no disponible: " + m.treasuryErr.Error()))
-		return b.String()
-	}
-	if m.treasuryAt.IsZero() {
+	case m.treasuryAt.IsZero():
 		if !m.loaded {
 			b.WriteString(mutedStyle.Render("  cargando…"))
-			return b.String()
+		} else {
+			b.WriteString(mutedStyle.Render("  sin datos"))
 		}
-		b.WriteString(mutedStyle.Render("  sin datos"))
-		return b.String()
+	default:
+		b.WriteString(m.renderCurveRows())
+		b.WriteByte('\n')
+		b.WriteString(m.renderSpread())
+		if m.treasuryErr != nil {
+			// Keep showing the last good curve, flagged as stale, like every other
+			// section does.
+			b.WriteByte('\n')
+			b.WriteString(staleNote(m.treasuryAt, m.treasuryErr))
+		}
 	}
 
-	b.WriteString(m.renderCurveRows())
+	// The Fed line is rendered whatever the curve's own state is: the two
+	// sources are independent, so neither may hide the other.
 	b.WriteByte('\n')
-	b.WriteString(m.renderSpread())
-	if m.treasuryErr != nil {
-		// Keep showing the last good curve, flagged as stale, like every other
-		// section does.
-		b.WriteByte('\n')
-		b.WriteString(staleNote(m.treasuryAt, m.treasuryErr))
+	b.WriteString(m.renderFed())
+	return b.String()
+}
+
+// renderFed renders the Federal Reserve reference rate line: the FOMC target
+// range, the effective federal funds rate with its daily change in basis
+// points, and the EFFR observation date. It owns its loading, stale and error
+// states against fedAt/fedErr, so its failure never touches the curve.
+func (m Model) renderFed() string {
+	if m.fedErr != nil {
+		// Keep showing the last good rate, flagged as stale. The gate is the
+		// success stamp, not rate.Date: the observation date can lag.
+		if !m.fedAt.IsZero() {
+			return m.renderFedValue() + "\n" + staleNote(m.fedAt, m.fedErr)
+		}
+		return errorStyle.Render(fmt.Sprintf("  no disponible: %v", m.fedErr))
+	}
+	if m.fedAt.IsZero() {
+		if !m.loaded {
+			return mutedStyle.Render("  cargando…")
+		}
+		return mutedStyle.Render("  sin datos")
+	}
+	return m.renderFedValue()
+}
+
+// renderFedValue formats the target range, the EFFR with its daily change and
+// the observation date. Percentages follow the dashboard's es-AR number rule
+// (comma decimals), and an unknown change renders as a dash rather than zero.
+func (m Model) renderFedValue() string {
+	var b strings.Builder
+	b.WriteString("  ")
+	b.WriteString(labelStyle.Render("Tasa FED "))
+	b.WriteString(rateStyle.Render(fmt.Sprintf("%s%% – %s%%",
+		formatNumber(m.rate.TargetLow, 2), formatNumber(m.rate.TargetHigh, 2))))
+	b.WriteString(labelStyle.Render(" · efectiva "))
+	b.WriteString(rateStyle.Render(fmt.Sprintf("%s%%", formatNumber(m.rate.Effective, 2))))
+	b.WriteString(" ")
+	b.WriteString(fedDeltaCell(m.rate.EffectiveDeltaBp))
+	if !m.rate.Date.IsZero() {
+		b.WriteString(mutedStyle.Render(" · " + m.rate.Date.Format("02-01-2006")))
 	}
 	return b.String()
+}
+
+// fedDeltaCell renders the EFFR daily change in basis points. The arrow carries
+// the direction and the colour follows the yield convention through
+// curveDeltaStyle (a rising rate is red, a falling one green); an unknown change
+// is a dash and a flat one a muted dot.
+func fedDeltaCell(deltaBp *float64) string {
+	if deltaBp == nil {
+		return mutedStyle.Render("—")
+	}
+	bp := int(math.Round(*deltaBp))
+	marker := "·"
+	switch {
+	case bp > 0:
+		marker = "▲"
+	case bp < 0:
+		marker = "▼"
+	}
+	return curveDeltaStyle(bp).Render(fmt.Sprintf("%s %s pb", marker, formatBp(bp)))
 }
 
 // renderCurveRows renders the curve as two columns of seven rows in ascending
@@ -635,6 +734,9 @@ func (m Model) lastSuccessAt() time.Time {
 	}
 	if m.treasuryAt.After(latest) {
 		latest = m.treasuryAt
+	}
+	if m.fedAt.After(latest) {
+		latest = m.fedAt
 	}
 	return latest
 }
