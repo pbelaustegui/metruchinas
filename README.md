@@ -1,6 +1,6 @@
 # metruchinas
 
-Market indicators in your terminal: USD/ARS quotes, the Argentine country-risk index, sovereign GD bond parities, and the US Treasury par yield curve, refreshed live from public APIs.
+Market indicators in your terminal: USD/ARS quotes, the Argentine country-risk index, sovereign GD bond parities, the US Treasury par yield curve, and the Federal Reserve reference rate, refreshed live from public APIs.
 
 ## What it shows
 
@@ -13,6 +13,7 @@ Market indicators in your terminal: USD/ARS quotes, the Argentine country-risk i
 | Riesgo país | EMBI Argentina index + daily variation | [mercados.ambito.com](https://mercados.ambito.com) |
 | Bonos soberanos GD (paridad) | GD29, GD30, GD35, GD38, GD41, GD46 with parity %, technical value, and USD price via CCL conversion | mercados.ambito.com/bono/{TICKER}/variacion |
 | Curva del Tesoro EE. UU. | 14 tenors (1M to 30Y) with level, daily change in basis points, publication date, and the 10Y-2Y spread | [home.treasury.gov](https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve) |
+| Tasa FED | FOMC target range, effective federal funds rate (EFFR) with its daily change in basis points, and the EFFR observation date | [fred.stlouisfed.org](https://fred.stlouisfed.org/) |
 
 All sources are public and need no API key.
 
@@ -22,7 +23,7 @@ All sources are public and need no API key.
 go run .
 ```
 
-Expected result: an alternate-screen dashboard with the four USD rates, the country-risk index, the GD bond table, and the US Treasury curve. It refetches every source every 30 seconds (the curve is served from a publication cache, see below); `q` quits.
+Expected result: an alternate-screen dashboard with the four USD rates, the country-risk index, the GD bond table, the US Treasury curve with the FOMC target range and EFFR underneath, and the reference rate's observation date. It refetches every source every 30 seconds (the curve and the Fed rate are served from their own caches, see below); `q` quits.
 
 ```bash
 # on-demand checks
@@ -38,13 +39,15 @@ go test -tags=integration ./internal/tui -run TestLiveSourcesFetchRealData -v
 
 | Key | Action |
 |-----|--------|
-| `r` | Refresh every source now, forcing the Treasury curve to refetch |
+| `r` | Refresh every source now, forcing the Treasury curve and the Fed rate to refetch |
 | `q`, `Esc`, `Ctrl+C` | Quit |
 
 ## Behavior you can rely on
 
 - **Partial failures never blank the dashboard.** Each source reports its own error; if Ámbito is down, the USD rates stay on screen (and vice versa) with a red message in the failing section.
 - **The Treasury curve is fetched once per business day.** Treasury releases roughly once per business day, Monday to Friday, at 16:00 New York time, so the dashboard asks the endpoint once per publication cycle and answers every other refresh from memory; `r` forces a refetch. The schedule follows the business week: a Friday evening, a Saturday and a Sunday all wait for Monday's release, so a session running from Friday 15:00 to Monday 09:00 makes one request. Two bounded exceptions qualify the once-per-day claim. If the newest row we hold is still older than the current business day after the release hour, the cache retries every 15 minutes until local midnight instead of waiting a whole day and instead of looping all night; holidays are not known to the schedule, so a weekday holiday looks like a late release and costs one evening of retries. If the source fails, the retry interval doubles on each consecutive failure (5, 10, 20, then a 30-minute ceiling) and the first success resets it, so a long outage costs at most two requests per hour instead of 288, and the section can stay on the last good curve for up to 30 minutes after the source recovers — `r` forces an immediate check.
+- **The Fed reference rate is fetched once per calendar day.** The FOMC target range (`DFEDTARL`/`DFEDTARU`) and the effective federal funds rate (`DFF`) come from FRED as three single-series CSV requests bounded to the last 30 days; `r` forces a refetch. Unlike the Treasury curve there is no publication calendar to follow, so the cache refreshes on the local calendar day alone — a session running across a weekend keeps showing the same values until FRED publishes a change. The failure backoff is the same ladder (5, 10, 20, then a 30-minute ceiling, reset on success).
+- **A missing FRED cell is never zero.** The series are forward-filled daily and the last one or two rows can be empty while a value is unpublished, so the dashboard reads the last non-empty row of each series and derives the EFFR change from the previous non-empty one.
 - **Curve columns are resolved by header name, never by position.** Treasury inserts and retires tenor columns (`1.5 Month` was inserted between `1 Mo` and `2 Mo`), so a parser reading by position would silently report one tenor's yield as another's. A tenor that is missing, retired, or blank keeps its slot and renders as `—`; a header that no longer carries any tracked tenor column is reported as an error instead, so the section can never degrade into fourteen dashes behind a valid-looking date.
 - **Curve changes are basis points against the previous business day.** The payload carries no variation field: the change is derived from the row above. Rising yields render red and falling yields green, and the 10Y-2Y spread is flagged as `curva invertida` when it turns negative.
 - **The first business day of a year still shows a change.** When the current year's file cannot supply the previous business day, the dashboard reads the previous year's file once to get it.
@@ -65,14 +68,16 @@ go test -tags=integration ./internal/tui -run TestLiveSourcesFetchRealData -v
 | `internal/riesgo` | Ámbito country-risk client (comma decimals, DD-MM-YYYY dates) |
 | `internal/bonos` | compararfondos.com.ar bond client (single-request payload, USD quotes) + parity math |
 | `internal/tesoro` | home.treasury.gov yield-curve client (header-name column mapping, previous-business-day changes) + publication cache |
+| `internal/fed` | fred.stlouisfed.org reference-rate client (three `cosd`-bounded single-series fetches, last-non-empty parsing) + calendar-day cache |
 | `internal/tui` | Dashboard model, view, and refresh pipeline |
 | `odd/tasks/macro-tui.md` | macro-tui feature plan of record and verification evidence |
 | `odd/tasks/bond-source-swap.md` | bond-source-swap feature plan of record |
 | `odd/tasks/us-treasury-curve.md` | us-treasury-curve feature plan of record and verification evidence |
+| `odd/tasks/fed-rate.md` | fed-rate feature plan of record and verification evidence |
 
 ## Notes and limits
 
 - Data comes from third-party public endpoints, not official BCRA feeds. Treat it as reference, not as financial advice.
 - Requires Go 1.27+ and internet access. Wall-clock refresh is 30 s; source update frequency is set by each provider.
-- The dashboard renders about 30 lines (four sections, six bonds, fourteen curve tenors). A terminal shorter than that scrolls.
+- The dashboard renders about 31 lines (four sections, six bonds, fourteen curve tenors). A terminal shorter than that scrolls.
 - The dashboard labels use the domain's Spanish names (`Riesgo país`, `Contado con liquidación`) because they mirror the API display names and the target audience.
