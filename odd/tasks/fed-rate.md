@@ -214,8 +214,10 @@ reusing `curveDeltaStyle`; the date muted. An unknown delta renders `—`.
 
 ## Review closure
 
-- Pending (native review is the user's switch to flip).
+- **Native review CLOSED (approved on the last admitted event, authority burned).** Lineage `review-77278df9bd239e20`, target `sha256:213bcb07278266d0a8c88bb26a5ff75f15a37b76045afe3efc3f853f09d8fb7e`, tier medium, one lens (`review-reliability`, order 0), 9 changed paths, 2,054 changed lines, correction budget 200 — unused (no BLOCKER/CRITICAL finding). Flow: inspect (base-diff via `baseRef=main`, `committedOnly`) → `managed_assets_outdated` stop → `gentle-ai sync` → inspect ready → START → reviewer capture (`approved`, store revision `sha256:2311e1f04c9f6348de16ecaaa8cbf508df9f7f2577751bba4bbebd9d5c236e25`) → acknowledgement `gentle-ai.review-acknowledged/v1`, `authority: burned`.
+- Advisory findings (all informational, none blocks, do NOT re-review this candidate for them): `R3-001` (`internal/fed/cache.go:100-118`, WARNING), `R3-002` (`internal/fed/cache.go:88-97`, SUGGESTION), `R3-003` (`internal/fed/client.go:262-333`, SUGGESTION). The native store keeps the state machine, not the finding prose, so the flagged line ranges are the durable evidence.
 
 ## Next step
 
-- Await the user's decision on commits / branch / native review.
+- Delivery: commits are done on the `feat/fed-rate` branch (work-unit commits); push / PR / merge remain the user's decisions.
+- Follow-ups (out of this candidate's scope): the three advisory findings above.
