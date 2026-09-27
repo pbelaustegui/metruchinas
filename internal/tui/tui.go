@@ -23,10 +23,10 @@ import (
 	"metruchinas/internal/tesoro"
 )
 
-// DefaultRefreshInterval is how often the dashboard refetches both sources.
+// DefaultRefreshInterval is how often the dashboard refetches every source.
 const DefaultRefreshInterval = 30 * time.Second
 
-// fetchTimeout bounds a single refresh cycle covering both sources.
+// fetchTimeout bounds a single refresh cycle covering every source.
 const fetchTimeout = 25 * time.Second
 
 // displayedHouses is the ordered list of dolarapi houses shown by the
@@ -269,7 +269,7 @@ func (m Model) refresh(force bool) tea.Cmd {
 }
 
 // timeoutErr converts an expired refresh context into an explicit per-source
-// failure. Both clients run their request under this context, but a response
+// failure. Every source runs its request under this context, but a response
 // already buffered when the deadline passes can return without an error, so
 // the cycle reports the expiry instead of silently keeping stale data.
 func timeoutErr(ctx context.Context, source string, timeout time.Duration) error {
