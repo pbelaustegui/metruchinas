@@ -217,7 +217,24 @@ reusing `curveDeltaStyle`; the date muted. An unknown delta renders `—`.
 - **Native review CLOSED (approved on the last admitted event, authority burned).** Lineage `review-77278df9bd239e20`, target `sha256:213bcb07278266d0a8c88bb26a5ff75f15a37b76045afe3efc3f853f09d8fb7e`, tier medium, one lens (`review-reliability`, order 0), 9 changed paths, 2,054 changed lines, correction budget 200 — unused (no BLOCKER/CRITICAL finding). Flow: inspect (base-diff via `baseRef=main`, `committedOnly`) → `managed_assets_outdated` stop → `gentle-ai sync` → inspect ready → START → reviewer capture (`approved`, store revision `sha256:2311e1f04c9f6348de16ecaaa8cbf508df9f7f2577751bba4bbebd9d5c236e25`) → acknowledgement `gentle-ai.review-acknowledged/v1`, `authority: burned`.
 - Advisory findings (all informational, none blocks, do NOT re-review this candidate for them): `R3-001` (`internal/fed/cache.go:100-118`, WARNING), `R3-002` (`internal/fed/cache.go:88-97`, SUGGESTION), `R3-003` (`internal/fed/client.go:262-333`, SUGGESTION). The native store keeps the state machine, not the finding prose, so the flagged line ranges are the durable evidence.
 
+## Delivery
+
+- **MERGED into `main`** on 2026-09-23 as PR [#8](https://github.com/pbelaustegui/metruchinas/pull/8)
+  (`feat: add the Federal Reserve reference rate to the Treasury section`),
+  merged by the maintainer as merge commit
+  `f4a2be27da9fd9b553a6ea9fd2dd4951caa0a43c`. This repo merges with merge
+  commits, not squashes, so the work units stay individually visible in
+  `main`'s history: `05bc40a` (FRED client + calendar-day cache) → `f285fa6`
+  (Treasury-section line) → `5cb15a8` / `90c94d6` (this tracker).
+- Branch `feat/fed-rate` deleted (local and remote); `origin` holds only
+  `main`.
+- Post-merge verification **on the integrated `main`**, not on the branch:
+  `gofmt -l .` empty, `go build ./...` and `go vet ./...` exit 0,
+  `go test -count=1 ./...` green in all six packages under `TZ=UTC`, working
+  tree clean.
+
 ## Next step
 
-- Delivery: commits are done on the `feat/fed-rate` branch (work-unit commits); push / PR / merge remain the user's decisions.
-- Follow-ups (out of this candidate's scope): the three advisory findings above.
+- Nothing pending from this feature.
+- Follow-ups (outside this candidate's scope, none blocking, none started):
+  the three advisory findings recorded in `## Review closure` above.
