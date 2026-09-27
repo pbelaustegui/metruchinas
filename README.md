@@ -11,7 +11,7 @@ Market indicators in your terminal: USD/ARS quotes, the Argentine country-risk i
 | Dólar MEP (bolsa) | Buy / sell rate | dolarapi.com |
 | Dólar CCL (contado con liquidación) | Buy / sell rate | dolarapi.com |
 | Riesgo país | EMBI Argentina index + daily variation | [mercados.ambito.com](https://mercados.ambito.com) |
-| Bonos soberanos GD (paridad) | GD29, GD30, GD35, GD38, GD41, GD46 with parity %, technical value, and USD price via CCL conversion | mercados.ambito.com/bono/{TICKER}/variacion |
+| Bonos soberanos GD (paridad) | GD29, GD30, GD35, GD38, GD41, GD46 with parity %, technical value, and USD price via CCL conversion | [compararfondos.com.ar](https://compararfondos.com.ar) |
 | Curva del Tesoro EE. UU. | 14 tenors (1M to 30Y) with level, daily change in basis points, publication date, and the 10Y-2Y spread | [home.treasury.gov](https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve) |
 | Tasa FED | FOMC target range, effective federal funds rate (EFFR) with its daily change in basis points, and the EFFR observation date | [fred.stlouisfed.org](https://fred.stlouisfed.org/) |
 

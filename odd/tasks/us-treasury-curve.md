@@ -150,7 +150,7 @@ Risks the plan does not cover:
 1. **The 80x24 premise does not hold.** The curve section itself is 9 lines as required, but the dashboard was already 21 lines with the six real bonds and is now **31** (measured: 27 visible lines with the two-bond test fixture — 28 when the empty element after the final newline is counted — and 31 visible lines, 32 with that element, with six bonds). The widest line is 60 display cells, so width is fine; height is not. Compressing the dolar (four rows) and bonds (six rows) sections into two columns would recover 5 lines, but that is a separate change with its own review.
 2. **Holidays are still invisible to the schedule** (weekends no longer are: see the T-02 correction). A weekday holiday looks like a late release, so the bounded retry runs that evening until publication-zone midnight — up to ~32 requests, about 480 KB, on a handful of days a year. Closing that needs a holiday calendar, which the plan rules out; the retry is bounded, so the cost is one evening rather than a day of stale data.
 3. **The 10 s client timeout is the only thing standing between the throttle and a stale section.** Under a browser `User-Agent` the endpoint answered in 0.38 s to 1.03 s across every live run, so the margin is large today, but the throttle behaviour is undocumented and can change without notice. A failure degrades to stale rendering, never to a blank section.
-4. **Pre-existing inaccuracies observed and deliberately not touched** (out of scope for this feature): the README indicator table still lists the bonds source as `mercados.ambito.com/bono/{TICKER}/variacion` while `internal/bonos` and the project layout use `compararfondos.com.ar`; and `DefaultRefreshInterval`'s comment says "both sources" although the dashboard now has four.
+4. **Pre-existing inaccuracies observed and deliberately not touched** (out of scope for this feature): the README indicator table still lists the bonds source as `mercados.ambito.com/bono/{TICKER}/variacion` while `internal/bonos` and the project layout use `compararfondos.com.ar` — **CLOSED 2026-09-27** (a dated observation of the record on 2026-09-22, not today's state; the fix is recorded in follow-up 2 below); and `DefaultRefreshInterval`'s comment says "both sources" although the dashboard now has **five** sources (dólar, riesgo, bonos, tesoro, fed) — **still open**.
 
 ## Decisions taken with the user (2026-09-22)
 
@@ -161,8 +161,8 @@ Risks the plan does not cover:
 ## Follow-ups (explicitly out of this candidate)
 
 1. **Dashboard height.** Compress the dólar (4 rows) and bonds (6 rows) sections into two columns to recover ~5 of the 31 lines. Needs its own candidate, layout tests, and review.
-2. **The README bonds-source row is wrong today, independent of this feature.** The indicator table still lists `mercados.ambito.com/bono/{TICKER}/variacion` as the source for the GD bonds while `internal/bonos` and the README's own project layout use `compararfondos.com.ar`. Pre-existing; deliberately not touched here.
-3. **`DefaultRefreshInterval`'s comment says "both sources"** while the dashboard now has four. Pre-existing; deliberately not touched here.
+2. **CLOSED (2026-09-27) — the README bonds-source row.** As written on 2026-09-22 this was accurate: the indicator table listed `mercados.ambito.com/bono/{TICKER}/variacion` as the source for the GD bonds while `internal/bonos` and the README's own project layout used `compararfondos.com.ar`. The row now names the live source; the fix was a one-line documentation correction, not a code change, so nothing here reopens a review.
+3. **`DefaultRefreshInterval`'s comment says "both sources"** (`internal/tui/tui.go:26`) while the dashboard now has **five** sources (dólar, riesgo, bonos, tesoro, fed). **STILL OPEN** — deliberately excluded from this sweep: it is a `.go` file, so touching it would leave the documentation-only candidate class and could trigger a real review lens run over a comment.
 4. **Holiday calendar.** A weekday holiday still costs one evening of bounded retries (~32 requests). Closing it needs a holiday source or table.
 
 ## Acceptance criteria
@@ -189,5 +189,16 @@ Risks the plan does not cover:
 
 ## Next step
 
-- Delivery: work-unit commits on request (never automatic).
-- Follow-ups, all out of this candidate's scope: the four advisory findings above; the dashboard-height compression; the stale README bonds-source row; and the `America/New_York` holiday calendar if the bounded holiday-evening retries ever matter.
+- **DELIVERED: MERGED into `main`** — PR [#7](https://github.com/pbelaustegui/metruchinas/pull/7)
+  `feat/us-treasury-curve`, merge commit `68f08a8` (2026-09-22), carrying `a1cf5f1`
+  (Treasury client + publication cache) → `0a6fd37` (TUI curve section) → `8865fdd`
+  (plan of record and review closure). Branch deleted (local and remote); `origin` holds
+  only `main`. Delivery stayed the maintainer's decision — never automatic.
+- Follow-ups, all out of this candidate's scope: the four advisory findings above; the dashboard-height compression; and the `America/New_York` holiday calendar if the bounded holiday-evening retries ever matter.
+- **CLOSED (2026-09-27) — the stale README bonds-source row.** `README.md` still declared
+  the retired `mercados.ambito.com/bono/{TICKER}/variacion` endpoint as the bond source
+  after `bond-source-swap` moved the client to `compararfondos.com.ar`
+  (`internal/bonos/client.go:25`, whose package doc records that the old source froze);
+  the indicator row now names the live source. Surfaced by a tracker-wide stale-claim
+  sweep, not by a code change — the follow-up itself was still accurate, which is why it
+  is closed here rather than quietly dropped.

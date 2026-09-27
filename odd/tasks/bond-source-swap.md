@@ -53,5 +53,9 @@ Replace the dead Ámbito bond quote source with compararfondos.com.ar so the das
 
 ## Next step
 
-- Delivery: work-unit commits on request (never automatic).
+- **DELIVERED: MERGED into `main`** — PR [#4](https://github.com/pbelaustegui/metruchinas/pull/4)
+  `feat/bond-source-swap`, merge commit `e081edb` (2026-09-21), carrying `9a0fdb3`
+  (`feat: switch bond quotes to compararfondos`) and `c617c95` (`chore: ignore .pi agent
+  state`). Branch deleted (local and remote); `origin` holds only `main`. Delivery stayed
+  the maintainer's decision — never automatic.
 - T-01 authorized 2026-09-21; T-02/T-03 executed in the same pass to keep the build green (TUI tests referenced the removed `Cierre` field).

@@ -172,8 +172,13 @@ the ticker mapping (New USD 20xx = GDxx) holds on both sources.
 - Review status: **no native Gentle AI review was run for this feature** — the user
   explicitly left these candidates unreviewed and closed the tracker anyway. D-07
   ("reviews per slice as in macro-tui") was NOT executed; recorded here as a deliberate
-  deviation, do not treat the commits as reviewed. Delivery stays as local work-unit
-  commits on `feat/bonos-parity` (no remote configured).
+  deviation, do not treat the commits as reviewed. **DELIVERED: MERGED into `main`** as
+  PR [#2](https://github.com/pbelaustegui/metruchinas/pull/2) (merge `ebc8158`, 2026-09-19)
+  carrying the feature commits, followed by PR
+  [#3](https://github.com/pbelaustegui/metruchinas/pull/3) (merge `85cf569`, 2026-09-20)
+  carrying the close-out evidence. The "(no remote configured)" wording in the D-07
+  decision above is the historical planning record, not the current state. Branch
+  `feat/bonos-parity` deleted (local and remote); `origin` holds only `main`.
 - Remaining open work: none. Advisory/coverage follow-ups: none recorded (no review ran).
 - Final commits: `c92835d` (plan of record) → `c707f48` (client + parity) →
   `44d9ce0` (TUI section + tests + README) → `918f48d` (VT cross-check evidence).
