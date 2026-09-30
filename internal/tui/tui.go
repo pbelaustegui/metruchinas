@@ -309,7 +309,7 @@ func (m Model) renderQuotes() string {
 		// Keep showing the last good quotes, flagged as stale with the
 		// error and the time they were successfully fetched.
 		if len(rows) > 0 {
-			return renderQuoteRows(rows) + "\n" + staleNote(m.quotesAt, m.quotesErr)
+			return renderQuoteRows(rows) + renderGap(m.quotes) + "\n" + staleNote(m.quotesAt, m.quotesErr)
 		}
 		return errorStyle.Render(fmt.Sprintf("  no disponible: %v", m.quotesErr))
 	}
@@ -319,7 +319,18 @@ func (m Model) renderQuotes() string {
 		}
 		return mutedStyle.Render("  sin cotizaciones para mostrar")
 	}
-	return renderQuoteRows(rows)
+	return renderQuoteRows(rows) + renderGap(m.quotes)
+}
+
+// renderGap renders the CCL/MEP gap line, starting on its own line, or
+// nothing when the gap cannot be computed.
+func renderGap(quotes []dolar.Quote) string {
+	gap, ok := dolar.GapPercent(quotes, "contadoconliqui", "bolsa")
+	if !ok {
+		return ""
+	}
+	return "\n  " + labelStyle.Render(padRight("Brecha CCL/MEP", 26)) +
+		rateStyle.Render(formatNumber(gap, 2)+"%")
 }
 
 // renderQuoteRows formats one quote per line: house name and buy/sell rates.

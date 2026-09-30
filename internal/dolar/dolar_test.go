@@ -181,3 +181,32 @@ func TestNewClientAppliesDefaults(t *testing.T) {
 		t.Errorf("NewClient().HTTPClient.Timeout = %v, want %v", c.HTTPClient.Timeout, defaultTimeout)
 	}
 }
+
+func TestGapPercent(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	tests := []struct {
+		name   string
+		quotes []Quote
+		want   float64
+		wantOK bool
+	}{
+		{"positive gap", []Quote{{Casa: "contadoconliqui", Venta: f(1500)}, {Casa: "bolsa", Venta: f(1450)}}, 3.448275862068966, true},
+		{"negative gap", []Quote{{Casa: "contadoconliqui", Venta: f(1400)}, {Casa: "bolsa", Venta: f(1450)}}, -3.4482758620689653, true},
+		{"missing numerator house", []Quote{{Casa: "bolsa", Venta: f(1450)}}, 0, false},
+		{"missing denominator house", []Quote{{Casa: "contadoconliqui", Venta: f(1500)}}, 0, false},
+		{"nil numerator venta", []Quote{{Casa: "contadoconliqui"}, {Casa: "bolsa", Venta: f(1450)}}, 0, false},
+		{"nil denominator venta", []Quote{{Casa: "contadoconliqui", Venta: f(1500)}, {Casa: "bolsa"}}, 0, false},
+		{"zero denominator", []Quote{{Casa: "contadoconliqui", Venta: f(1500)}, {Casa: "bolsa", Venta: f(0)}}, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := GapPercent(tt.quotes, "contadoconliqui", "bolsa")
+			if ok != tt.wantOK {
+				t.Fatalf("GapPercent() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("GapPercent() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -516,9 +516,11 @@ func TestRenderQuotesAlignsRateColumnsAcrossLabels(t *testing.T) {
 	m.quotes = quotes
 
 	lines := strings.Split(m.renderQuotes(), "\n")
-	if len(lines) != len(displayedHouses) {
-		t.Fatalf("renderQuotes() returned %d lines, want %d", len(lines), len(displayedHouses))
+	// The rows are followed by the CCL/MEP gap line, which has no rate pair.
+	if len(lines) != len(displayedHouses)+1 {
+		t.Fatalf("renderQuotes() returned %d lines, want %d", len(lines), len(displayedHouses)+1)
 	}
+	lines = lines[:len(displayedHouses)]
 
 	// Every rate separator must start at the same display column, whatever the
 	// label length. The prefix carries SGR codes, which Width ignores.
@@ -1598,5 +1600,48 @@ func TestViewFedUnavailableWithoutData(t *testing.T) {
 	}
 	if !strings.Contains(view, "Spread 10Y-2Y") {
 		t.Error("a fed failure blanked the curve")
+	}
+}
+
+func TestRenderQuotesShowsCCLMEPGapInEsARFormat(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.quotes = []dolar.Quote{
+		{Casa: "bolsa", Nombre: "Bolsa", Compra: rate(1440), Venta: rate(1450)},
+		{Casa: "contadoconliqui", Nombre: "Contado con liquidación", Compra: rate(1490), Venta: rate(1500)},
+	}
+
+	out := m.renderQuotes()
+	if !strings.Contains(out, "Brecha CCL/MEP") || !strings.Contains(out, "3,45%") {
+		t.Errorf("renderQuotes() missing gap line %q, got %q", "Brecha CCL/MEP 3,45%", out)
+	}
+}
+
+func TestRenderQuotesOmitsGapWhenAHouseIsMissing(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.quotes = []dolar.Quote{
+		{Casa: "oficial", Nombre: "Oficial", Compra: rate(1485), Venta: rate(1535)},
+		{Casa: "bolsa", Nombre: "Bolsa", Compra: rate(1440), Venta: rate(1450)},
+	}
+
+	out := m.renderQuotes()
+	if strings.Contains(out, "Brecha") {
+		t.Errorf("renderQuotes() shows a gap without the CCL house: %q", out)
+	}
+	if !strings.Contains(out, "Oficial") {
+		t.Errorf("renderQuotes() lost the quote rows: %q", out)
+	}
+}
+
+func TestRenderQuotesShowsGapInStalePath(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	m.quotes, _ = okQuotes(context.Background())
+	m.quotesErr = errors.New("dolarapi timeout")
+	m.quotesAt = staleAt
+
+	out := m.renderQuotes()
+	for _, want := range []string{"Brecha CCL/MEP", "desactualizado"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stale renderQuotes() missing %q: %q", want, out)
+		}
 	}
 }
