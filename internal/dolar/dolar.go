@@ -144,3 +144,26 @@ func parseQuotes(body []byte) ([]Quote, error) {
 	}
 	return quotes, nil
 }
+
+// GapPercent returns the premium of the numerator house's sell rate over the
+// denominator house's, in percent: (numerator / denominator - 1) * 100. It
+// reports ok=false when either house is absent, either sell rate is not
+// published, or the denominator is not positive.
+func GapPercent(quotes []Quote, numeratorCasa, denominatorCasa string) (float64, bool) {
+	num, okNum := sellRate(quotes, numeratorCasa)
+	den, okDen := sellRate(quotes, denominatorCasa)
+	if !okNum || !okDen || den <= 0 {
+		return 0, false
+	}
+	return (num/den - 1) * 100, true
+}
+
+// sellRate returns the published sell rate of the given house.
+func sellRate(quotes []Quote, casa string) (float64, bool) {
+	for _, q := range quotes {
+		if q.Casa == casa && q.Venta != nil {
+			return *q.Venta, true
+		}
+	}
+	return 0, false
+}

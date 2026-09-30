@@ -9,6 +9,7 @@ Market indicators in your terminal: USD/ARS quotes, the Argentine country-risk i
 | Dólar oficial | Buy / sell rate | [dolarapi.com](https://dolarapi.com/docs/) |
 | Dólar blue | Buy / sell rate | dolarapi.com |
 | Dólar MEP (bolsa) | Buy / sell rate | dolarapi.com |
+| Brecha CCL/MEP | CCL sell / MEP sell − 1, in % | derived from dolarapi.com |
 | Dólar CCL (contado con liquidación) | Buy / sell rate | dolarapi.com |
 | Riesgo país | EMBI Argentina index + daily variation | [mercados.ambito.com](https://mercados.ambito.com) |
 | Bonos soberanos GD (paridad) | GD29, GD30, GD35, GD38, GD41, GD46 with parity %, technical value, and USD price via CCL conversion | [compararfondos.com.ar](https://compararfondos.com.ar) |
