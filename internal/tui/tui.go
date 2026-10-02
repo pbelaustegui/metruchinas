@@ -392,6 +392,18 @@ func (m Model) renderRiesgoValue() string {
 	b.WriteString(valueStyle.Render(formatNumber(m.riesgo.Value, 0)))
 	b.WriteString("  ")
 	b.WriteString(style.Render(fmt.Sprintf("%s %s%%", arrow, formatNumber(m.riesgo.Variation, 2))))
+	// The API only publishes the percentage, so the point change is derived
+	// from the previous close implied by it.
+	if m.riesgo.Variation > -100 {
+		points := math.Round(m.riesgo.Value - m.riesgo.Value/(1+m.riesgo.Variation/100))
+		sign := ""
+		if points > 0 {
+			sign = "+"
+		} else if points == 0 {
+			points = 0 // drop the sign bit so a tiny drop never renders "-0"
+		}
+		b.WriteString(style.Render(fmt.Sprintf(" (%s%s pts)", sign, formatNumber(points, 0))))
+	}
 	if !m.riesgo.Date.IsZero() {
 		b.WriteString(mutedStyle.Render(fmt.Sprintf("   (%s)", m.riesgo.Date.Format("02-01-2006"))))
 	}
