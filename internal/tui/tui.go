@@ -24,6 +24,7 @@ import (
 	"metruchinas/internal/itcrm"
 	"metruchinas/internal/riesgo"
 	"metruchinas/internal/tesoro"
+	"metruchinas/internal/uscpi"
 )
 
 // DefaultRefreshInterval is how often the dashboard refetches every source.
@@ -71,6 +72,11 @@ type ITCRMFetcher func(ctx context.Context, force bool) (itcrm.Indicator, error)
 // reaches the calendar-day cache that spares a request on every other cycle.
 type IPCFetcher func(ctx context.Context, force bool) (ipc.Indicator, error)
 
+// USCPIFetcher retrieves the US consumer price index. It matches
+// uscpi.Cache.Get: force asks for a refetch instead of the cached value, so `r`
+// reaches the calendar-day cache that spares two requests on every other cycle.
+type USCPIFetcher func(ctx context.Context, force bool) (uscpi.Indicator, error)
+
 // dataMsg carries the outcome of one refresh cycle. Each source reports its
 // own error so a failing source never hides the other one's data.
 type dataMsg struct {
@@ -88,6 +94,8 @@ type dataMsg struct {
 	itcrmErr    error
 	ipc         ipc.Indicator
 	ipcErr      error
+	uscpi       uscpi.Indicator
+	uscpiErr    error
 	fetchedAt   time.Time
 }
 
@@ -110,7 +118,9 @@ type Model struct {
 	itcrmErr    error
 	ipc         ipc.Indicator
 	ipcErr      error
-	// quotesAt, riesgoAt, bondsAt, treasuryAt, fedAt, itcrmAt and ipcAt are the wall-clock
+	uscpi       uscpi.Indicator
+	uscpiErr    error
+	// quotesAt, riesgoAt, bondsAt, treasuryAt, fedAt, itcrmAt, ipcAt and uscpiAt are the wall-clock
 	// times of the last successful fetch per source. They power stale rendering:
 	// a failing refresh keeps the last good data on screen and says how old it
 	// is.
@@ -121,6 +131,7 @@ type Model struct {
 	fedAt         time.Time
 	itcrmAt       time.Time
 	ipcAt         time.Time
+	uscpiAt       time.Time
 	refreshing    bool
 	fetchQuotes   QuotesFetcher
 	fetchRiesgo   RiesgoFetcher
@@ -129,6 +140,7 @@ type Model struct {
 	fetchFed      FedFetcher
 	fetchITCRM    ITCRMFetcher
 	fetchIPC      IPCFetcher
+	fetchUSCPI    USCPIFetcher
 	interval      time.Duration
 	timeout       time.Duration
 	loaded        bool
@@ -153,6 +165,9 @@ func New() Model {
 	// The CPI is published once a month, so it is wrapped in a calendar-day
 	// cache as well.
 	ipcCache := ipc.NewDailyCache(ipc.NewClient().Fetch)
+	// The US CPI is published once a month, so it is wrapped in a calendar-day
+	// cache as well.
+	uscpiCache := uscpi.NewDailyCache(uscpi.NewClient().Fetch)
 	return Model{
 		fetchQuotes: dc.Fetch,
 		fetchRiesgo: rc.Fetch,
@@ -163,6 +178,7 @@ func New() Model {
 		fetchFed:      fedCache.Get,
 		fetchITCRM:    itcrmCache.Get,
 		fetchIPC:      ipcCache.Get,
+		fetchUSCPI:    uscpiCache.Get,
 		interval:      DefaultRefreshInterval,
 		timeout:       fetchTimeout,
 		refreshing:    true,
@@ -247,6 +263,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ipc, m.ipcErr = msg.ipc, nil
 			m.ipcAt = msg.fetchedAt
 		}
+		if msg.uscpiErr != nil {
+			m.uscpiErr = msg.uscpiErr
+		} else {
+			m.uscpi, m.uscpiErr = msg.uscpi, nil
+			m.uscpiAt = msg.fetchedAt
+		}
 		return m, nil
 	}
 	return m, nil
@@ -328,6 +350,15 @@ func (m Model) refresh(force bool) tea.Cmd {
 		} else {
 			msg.ipc = inflation
 		}
+		usInflation, err := m.fetchUSCPI(ctx, force)
+		if err == nil {
+			err = timeoutErr(ctx, "uscpi", timeout)
+		}
+		if err != nil {
+			msg.uscpiErr = err
+		} else {
+			msg.uscpi = usInflation
+		}
 		return msg
 	}
 }
@@ -356,6 +387,8 @@ func (m Model) View() string {
 	b.WriteString(m.renderITCRM())
 	b.WriteString("\n")
 	b.WriteString(m.renderIPC())
+	b.WriteString("\n")
+	b.WriteString(m.renderUSCPI())
 	b.WriteString("\n\n")
 	b.WriteString(sectionStyle.Render("Riesgo país (EMBI Argentina)"))
 	b.WriteString("\n")
@@ -462,6 +495,36 @@ func (m Model) renderIPCValue() string {
 		valueStyle.Render(formatNumber(m.ipc.Monthly, 1)+"%") + " mensual" + sep +
 		valueStyle.Render(formatNumber(m.ipc.Year12, 1)+"%") + " 12m" + sep +
 		valueStyle.Render(formatNumber(m.ipc.YTD, 1)+"%") + " acum. año"
+}
+
+// renderUSCPI renders the one-line US consumer price index shown under the IPC
+// line: "CPI EE. UU. (ago-2026): 0,4% mensual · 2,9% 12m · 1,8% acum. año".
+// Loading, unavailable and stale states follow the other sections.
+func (m Model) renderUSCPI() string {
+	label := "  " + labelStyle.Render("CPI EE. UU.:") + " "
+	if m.uscpiErr != nil {
+		if !m.uscpiAt.IsZero() {
+			return m.renderUSCPIValue() + "\n" + staleNote(m.uscpiAt, m.uscpiErr)
+		}
+		return label + errorStyle.Render(fmt.Sprintf("no disponible: %v", m.uscpiErr))
+	}
+	if m.uscpiAt.IsZero() {
+		if !m.loaded {
+			return label + mutedStyle.Render("cargando…")
+		}
+		return label + mutedStyle.Render("sin datos")
+	}
+	return m.renderUSCPIValue()
+}
+
+// renderUSCPIValue formats the three variations in the neutral value style,
+// like the IPC: a rising price index is not a market gain or loss.
+func (m Model) renderUSCPIValue() string {
+	sep := mutedStyle.Render(" · ")
+	return "  " + labelStyle.Render(fmt.Sprintf("CPI EE. UU. (%s):", ipcMonthLabel(m.uscpi.Month))) + " " +
+		valueStyle.Render(formatNumber(m.uscpi.Monthly, 1)+"%") + " mensual" + sep +
+		valueStyle.Render(formatNumber(m.uscpi.Year12, 1)+"%") + " 12m" + sep +
+		valueStyle.Render(formatNumber(m.uscpi.YTD, 1)+"%") + " acum. año"
 }
 
 // renderGap renders the CCL/MEP gap line, starting on its own line, or
@@ -912,6 +975,9 @@ func (m Model) lastSuccessAt() time.Time {
 	}
 	if m.ipcAt.After(latest) {
 		latest = m.ipcAt
+	}
+	if m.uscpiAt.After(latest) {
+		latest = m.uscpiAt
 	}
 	return latest
 }
