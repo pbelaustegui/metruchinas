@@ -455,7 +455,7 @@ func TestViewRendersDataHintsAndPerSourceErrors(t *testing.T) {
 		updated, _ := m.Update(dataMsg{quotes: quotes, riesgo: ind, fetchedAt: time.Now()})
 		view := updated.(Model).View()
 
-		for _, want := range []string{"Oficial", "1.485,00", "515", "0,98%", "q salir", "r refrescar"} {
+		for _, want := range []string{"Oficial", "1.485,00", "515", "0,98% (+5 pts)", "q salir", "r refrescar"} {
 			if !strings.Contains(view, want) {
 				t.Errorf("View() missing %q", want)
 			}
@@ -493,11 +493,26 @@ func TestViewShowsDownArrowForFallingIndex(t *testing.T) {
 	updated, _ := m.Update(dataMsg{quotes: quotes, riesgo: falling, fetchedAt: time.Now()})
 	view := updated.(Model).View()
 
-	if !strings.Contains(view, "▼ -1,25%") {
-		t.Errorf("View() missing the falling-index arrow and signed variation:\n%s", view)
+	if !strings.Contains(view, "▼ -1,25% (-6 pts)") {
+		t.Errorf("View() missing the falling-index arrow, variation and points:\n%s", view)
 	}
 	if strings.Contains(view, "▲") {
 		t.Errorf("View() shows the rising arrow for a negative variation:\n%s", view)
+	}
+}
+
+func TestViewRiesgoPointsNeverRenderNegativeZero(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	tiny := riesgo.Indicator{Value: 500, Variation: -0.05, VariationClass: "down-green"}
+	updated, _ := m.Update(dataMsg{quotes: quotes, riesgo: tiny, fetchedAt: time.Now()})
+	view := updated.(Model).View()
+
+	if strings.Contains(view, "-0 pts") {
+		t.Errorf("View() renders a negative zero for a sub-point drop:\n%s", view)
+	}
+	if !strings.Contains(view, "(0 pts)") {
+		t.Errorf("View() missing the zero point change:\n%s", view)
 	}
 }
 
