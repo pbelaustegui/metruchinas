@@ -1228,14 +1228,15 @@ func TestCurveColumnsAlignAcrossEveryRow(t *testing.T) {
 func TestCurveSectionFitsInTenLines(t *testing.T) {
 	// Two columns of seven tenors keep the curve inside ten lines; a single
 	// column would push the whole dashboard out of a terminal. The tenth line is
-	// the Federal Reserve reference rate appended inside the section.
+	// the Federal Reserve reference rate appended inside the section, and the
+	// eleventh the US CPI line.
 	m := newTestModel(okQuotes, okRiesgo)
-	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), fetchedAt: staleAt})
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), uscpi: okUSCPI(), fetchedAt: staleAt})
 	m = updated.(Model)
 
 	lines := strings.Split(m.renderTreasury(), "\n")
-	if len(lines) != 10 {
-		t.Errorf("renderTreasury() returned %d lines, want 10 (header + 7 rows + spread + fed):\n%s", len(lines), m.renderTreasury())
+	if len(lines) != 11 {
+		t.Errorf("renderTreasury() returned %d lines, want 11 (header + 7 rows + spread + fed + cpi):\n%s", len(lines), m.renderTreasury())
 	}
 }
 
@@ -1956,14 +1957,17 @@ func TestViewRendersUSCPILine(t *testing.T) {
 	}
 }
 
-func TestViewUSCPISitsRightUnderIPC(t *testing.T) {
+func TestViewUSCPISitsInTheUSSectionRightAfterFed(t *testing.T) {
 	m := newTestModel(okQuotes, okRiesgo)
-	updated, _ := m.Update(dataMsg{ipc: okIPC(), uscpi: okUSCPI(), fetchedAt: time.Now()})
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), uscpi: okUSCPI(), fetchedAt: time.Now()})
 	view := updated.(Model).View()
-	ipcAt := strings.Index(view, "IPC (")
+	fedAt := strings.Index(view, "Tasa FED")
 	usAt := strings.Index(view, "CPI EE. UU. (")
-	if ipcAt < 0 || usAt < ipcAt || strings.Contains(view[ipcAt:usAt], "\n\n") {
-		t.Errorf("US CPI line is not directly after the IPC line: %q", view)
+	if fedAt < 0 || usAt < fedAt || strings.Contains(view[fedAt:usAt], "\n\n") {
+		t.Errorf("US CPI line is not directly after the Fed line: %q", view)
+	}
+	if ipcAt := strings.Index(view, "IPC ("); ipcAt >= 0 && usAt < ipcAt {
+		t.Errorf("US CPI line is still among the Argentine indicators: %q", view)
 	}
 }
 

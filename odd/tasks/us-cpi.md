@@ -14,7 +14,7 @@ Show the US CPI (all items, all urban consumers, BLS): last monthly variation, l
 
 ## Scope
 - New package `internal/uscpi` modeled on `internal/ipc` (derivations, cache, validation) and `internal/fed` (FRED CSV fetching/parsing, empty-cell handling).
-- Wire into `internal/tui` like the IPC line, placed under the IPC line; loading/stale/error states like the other sections; neutral value style.
+- Wire into `internal/tui` like the IPC line, placed at the end of the US section (under the Fed line), moved there after review; loading/stale/error states like the other sections; neutral value style.
 - README.md updated in the same feature (see the README-per-feature convention): overview, source table, expected result, behavior notes, project layout, `odd/tasks/us-cpi.md` row, dashboard line count (add the new line(s) to the estimate).
 - Out of scope: core CPI, categories, charts.
 

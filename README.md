@@ -27,7 +27,7 @@ All sources are public and need no API key.
 go run .
 ```
 
-Expected result: an alternate-screen dashboard with the four USD rates, the country-risk index, the GD bond table, the ITCRM, IPC and US CPI lines under the dollar quotes, the US Treasury curve with the FOMC target range and EFFR underneath, and the reference rate's observation date. It refetches every source every 30 seconds (the curve and the Fed rate are served from their own caches, see below); `q` quits.
+Expected result: an alternate-screen dashboard with the four USD rates, the country-risk index, the GD bond table, the ITCRM and IPC lines under the dollar quotes, the US Treasury curve with the FOMC target range, EFFR and US CPI underneath, and the reference rate's observation date. It refetches every source every 30 seconds (the curve and the Fed rate are served from their own caches, see below); `q` quits.
 
 ```bash
 # on-demand checks

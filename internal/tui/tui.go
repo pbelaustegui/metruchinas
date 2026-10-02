@@ -387,8 +387,6 @@ func (m Model) View() string {
 	b.WriteString(m.renderITCRM())
 	b.WriteString("\n")
 	b.WriteString(m.renderIPC())
-	b.WriteString("\n")
-	b.WriteString(m.renderUSCPI())
 	b.WriteString("\n\n")
 	b.WriteString(sectionStyle.Render("Riesgo país (EMBI Argentina)"))
 	b.WriteString("\n")
@@ -497,8 +495,8 @@ func (m Model) renderIPCValue() string {
 		valueStyle.Render(formatNumber(m.ipc.YTD, 1)+"%") + " acum. año"
 }
 
-// renderUSCPI renders the one-line US consumer price index shown under the IPC
-// line: "CPI EE. UU. (ago-2026): 0,4% mensual · 2,9% 12m · 1,8% acum. año".
+// renderUSCPI renders the one-line US consumer price index that closes the US
+// section: "CPI EE. UU. (ago-2026): 0,4% mensual · 2,9% 12m · 1,8% acum. año".
 // Loading, unavailable and stale states follow the other sections.
 func (m Model) renderUSCPI() string {
 	label := "  " + labelStyle.Render("CPI EE. UU.:") + " "
@@ -633,10 +631,11 @@ const (
 // its daily change in basis points, the 10Y-2Y spread underneath, and the
 // Federal Reserve reference rate that anchors the short end.
 //
-// Two columns keep the section inside ten lines. A single column of fourteen
+// Two columns keep the curve inside ten lines. A single column of fourteen
 // rows would add eight more lines to a dashboard that already runs past an
-// 80x24 terminal. The Fed line is rendered last and owns its own loading, stale
-// and error states, so a Fed failure never blanks the curve and vice versa.
+// 80x24 terminal. The Fed and US CPI lines follow it, each owning its own
+// loading, stale and error states, so one failing source never blanks the
+// others.
 func (m Model) renderTreasury() string {
 	var b strings.Builder
 	b.WriteString(sectionStyle.Render(treasurySectionTitle))
@@ -670,6 +669,9 @@ func (m Model) renderTreasury() string {
 	// sources are independent, so neither may hide the other.
 	b.WriteByte('\n')
 	b.WriteString(m.renderFed())
+	// The US CPI closes the US section; like the Fed line it owns its states.
+	b.WriteByte('\n')
+	b.WriteString(m.renderUSCPI())
 	return b.String()
 }
 
