@@ -631,9 +631,9 @@ func curveLabelWidth(tenors []tesoro.Tenor) int {
 }
 
 // renderSpread renders the 10Y-2Y spread in basis points. A negative spread is
-// the inverted-curve signal, so it is flagged explicitly instead of being
-// coloured by the yield convention: here the sign is the news, not a market
-// direction.
+// the inverted-curve signal, so the sign drives the colour (green positive, red
+// negative) instead of the yield convention: here the sign is the news, not a
+// market direction.
 func (m Model) renderSpread() string {
 	spread, ok := m.curve.SpreadBp("10Y", "2Y")
 	if !ok {
@@ -644,7 +644,7 @@ func (m Model) renderSpread() string {
 	if bp < 0 {
 		return lossStyle.Render(text + " · curva invertida")
 	}
-	return rateStyle.Render(text)
+	return gainStyle.Render(text)
 }
 
 // formatBp renders a basis-point change with an explicit sign: +20, -45, 0.
