@@ -1951,7 +1951,7 @@ func TestViewRendersUSCPILine(t *testing.T) {
 	updated, _ := m.Update(dataMsg{uscpi: okUSCPI(), fetchedAt: time.Now()})
 	view := updated.(Model).View()
 
-	want := "CPI EE. UU. (ago-2026): 0,4% mensual · 2,9% 12m · 1,8% acum. año"
+	want := "CPI EE. UU. (ago-2026): 0,41% mensual · 2,94% 12m · 1,83% acum. año"
 	if !strings.Contains(view, want) {
 		t.Errorf("View() missing the US CPI line %q, got %q", want, view)
 	}
@@ -1979,7 +1979,7 @@ func TestViewUSCPIUsesNeutralStyleForAnyValue(t *testing.T) {
 			ind.Monthly = monthly
 			updated, _ := m.Update(dataMsg{uscpi: ind, fetchedAt: time.Now()})
 			out := updated.(Model).renderUSCPI()
-			text := formatNumber(monthly, 1) + "%"
+			text := formatNumber(monthly, 2) + "%"
 			if !strings.Contains(out, valueStyle.Render(text)) {
 				t.Errorf("renderUSCPI() = %q, want %q in the neutral value style", out, text)
 			}
@@ -2020,7 +2020,7 @@ func TestViewUSCPIStaleKeepsValueWithErrorAndTimestamp(t *testing.T) {
 		t.Errorf("uscpiAt = %v, want %v untouched by the failure", m.uscpiAt, staleAt)
 	}
 	out := m.renderUSCPI()
-	for _, want := range []string{"CPI EE. UU. (ago-2026): 0,4% mensual", "fred timeout", "10:30:00", "desactualizado"} {
+	for _, want := range []string{"CPI EE. UU. (ago-2026): 0,41% mensual", "fred timeout", "10:30:00", "desactualizado"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("renderUSCPI() = %q, missing %q", out, want)
 		}

@@ -496,7 +496,7 @@ func (m Model) renderIPCValue() string {
 }
 
 // renderUSCPI renders the one-line US consumer price index that closes the US
-// section: "CPI EE. UU. (ago-2026): 0,4% mensual · 2,9% 12m · 1,8% acum. año".
+// section: "CPI EE. UU. (ago-2026): 0,41% mensual · 2,94% 12m · 1,83% acum. año".
 // Loading, unavailable and stale states follow the other sections.
 func (m Model) renderUSCPI() string {
 	label := "  " + labelStyle.Render("CPI EE. UU.:") + " "
@@ -516,13 +516,15 @@ func (m Model) renderUSCPI() string {
 }
 
 // renderUSCPIValue formats the three variations in the neutral value style,
-// like the IPC: a rising price index is not a market gain or loss.
+// like the IPC: a rising price index is not a market gain or loss. It shows two
+// decimals, unlike the IPC, because the 12-month and year-to-date figures can
+// differ by less than a tenth of a point and would otherwise read as identical.
 func (m Model) renderUSCPIValue() string {
 	sep := mutedStyle.Render(" · ")
 	return "  " + labelStyle.Render(fmt.Sprintf("CPI EE. UU. (%s):", ipcMonthLabel(m.uscpi.Month))) + " " +
-		valueStyle.Render(formatNumber(m.uscpi.Monthly, 1)+"%") + " mensual" + sep +
-		valueStyle.Render(formatNumber(m.uscpi.Year12, 1)+"%") + " 12m" + sep +
-		valueStyle.Render(formatNumber(m.uscpi.YTD, 1)+"%") + " acum. año"
+		valueStyle.Render(formatNumber(m.uscpi.Monthly, 2)+"%") + " mensual" + sep +
+		valueStyle.Render(formatNumber(m.uscpi.Year12, 2)+"%") + " 12m" + sep +
+		valueStyle.Render(formatNumber(m.uscpi.YTD, 2)+"%") + " acum. año"
 }
 
 // renderGap renders the CCL/MEP gap line, starting on its own line, or
