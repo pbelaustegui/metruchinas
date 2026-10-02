@@ -613,8 +613,9 @@ func (m Model) renderRiesgoValue() string {
 	return b.String()
 }
 
-// treasurySectionTitle is the curve section header.
-const treasurySectionTitle = "Curva del Tesoro EE. UU."
+// treasurySectionTitle is the US section header: the Treasury curve, the Fed
+// rate and the US CPI share the section.
+const treasurySectionTitle = "Estados Unidos"
 
 const (
 	// curveYieldWidth and curveDeltaWidth are the fixed display widths of the

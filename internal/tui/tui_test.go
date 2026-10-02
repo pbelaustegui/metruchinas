@@ -1058,7 +1058,7 @@ func TestViewRendersTreasuryCurve(t *testing.T) {
 	m = updated.(Model)
 	view := m.View()
 
-	if !strings.Contains(view, "Curva del Tesoro") {
+	if !strings.Contains(view, "Estados Unidos") {
 		t.Error("View() is missing the treasury section header")
 	}
 	if !strings.Contains(view, "21-09-2026") {
@@ -1299,7 +1299,7 @@ func TestViewShowsTreasuryLoadingBeforeFirstData(t *testing.T) {
 	if view := m.renderTreasury(); !strings.Contains(view, "cargando") {
 		t.Errorf("renderTreasury() = %q, want a loading placeholder before the first fetch", view)
 	}
-	if view := m.View(); !strings.Contains(view, "Curva del Tesoro") {
+	if view := m.View(); !strings.Contains(view, "Estados Unidos") {
 		t.Error("View() must show the section header while the first fetch is in flight")
 	}
 }
