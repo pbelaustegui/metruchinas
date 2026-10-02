@@ -501,6 +501,21 @@ func TestViewShowsDownArrowForFallingIndex(t *testing.T) {
 	}
 }
 
+func TestViewRiesgoPointsNeverRenderNegativeZero(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	quotes, _ := okQuotes(context.Background())
+	tiny := riesgo.Indicator{Value: 500, Variation: -0.05, VariationClass: "down-green"}
+	updated, _ := m.Update(dataMsg{quotes: quotes, riesgo: tiny, fetchedAt: time.Now()})
+	view := updated.(Model).View()
+
+	if strings.Contains(view, "-0 pts") {
+		t.Errorf("View() renders a negative zero for a sub-point drop:\n%s", view)
+	}
+	if !strings.Contains(view, "(0 pts)") {
+		t.Errorf("View() missing the zero point change:\n%s", view)
+	}
+}
+
 func TestPadRightMeasuresDisplayCellsNotBytes(t *testing.T) {
 	// "liquidación" carries a multibyte rune, so a byte count undershoots the
 	// padding and shifts everything after it one cell to the left.
