@@ -14,6 +14,7 @@ import (
 	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/fed"
+	"metruchinas/internal/itcrm"
 	"metruchinas/internal/riesgo"
 	"metruchinas/internal/tesoro"
 )
@@ -35,6 +36,9 @@ func newTestModel(quotes QuotesFetcher, r RiesgoFetcher) Model {
 	m.fetchFed = func(ctx context.Context, force bool) (fed.Rate, error) {
 		return okFed(), nil
 	}
+	m.fetchITCRM = func(ctx context.Context, force bool) (itcrm.Indicator, error) {
+		return okITCRM(), nil
+	}
 	m.refreshing = false
 	return m
 }
@@ -55,6 +59,14 @@ func okRiesgo(context.Context) (riesgo.Indicator, error) {
 		VariationClass: "up-red",
 		Date:           time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC),
 	}, nil
+}
+
+func okITCRM() itcrm.Indicator {
+	return itcrm.Indicator{
+		Value:     85.03505937989866,
+		Variation: -0.1307801692349453,
+		Date:      time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+	}
 }
 
 func okBonds() []bonos.BondQuote {
@@ -1658,5 +1670,122 @@ func TestRenderQuotesShowsGapInStalePath(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("stale renderQuotes() missing %q: %q", want, out)
 		}
+	}
+}
+
+func TestViewRendersITCRMLine(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{itcrm: okITCRM(), fetchedAt: time.Now()})
+	view := updated.(Model).View()
+
+	if !strings.Contains(view, "ITCRM: 85,04 (-0,13%)") {
+		t.Errorf("View() missing the ITCRM line, got %q", view)
+	}
+}
+
+func TestViewITCRMVariationColorFollowsSign(t *testing.T) {
+	for name, tt := range map[string]struct {
+		variation float64
+		want      string
+		style     lipgloss.Style
+	}{
+		"falling": {-0.13, "(-0,13%)", lossStyle},
+		"rising":  {0.13, "(+0,13%)", gainStyle},
+		"flat":    {0, "(0,00%)", gainStyle},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := newTestModel(okQuotes, okRiesgo)
+			ind := okITCRM()
+			ind.Variation = tt.variation
+			updated, _ := m.Update(dataMsg{itcrm: ind, fetchedAt: time.Now()})
+			out := updated.(Model).renderITCRM()
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("renderITCRM() = %q, want it to contain %q", out, tt.want)
+			}
+			if styled := tt.style.Render(tt.want); !strings.Contains(out, styled) {
+				t.Errorf("renderITCRM() = %q, want variation rendered as %q", out, styled)
+			}
+		})
+	}
+}
+
+func TestViewITCRMLoadingBeforeFirstData(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	out := m.renderITCRM()
+	for _, want := range []string{"ITCRM", "cargando"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderITCRM() = %q, missing %q", out, want)
+		}
+	}
+}
+
+func TestViewITCRMErrorWithoutDataShowsUnavailable(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{itcrmErr: errors.New("bcra timeout"), fetchedAt: time.Now()})
+	out := updated.(Model).renderITCRM()
+	for _, want := range []string{"ITCRM", "no disponible", "bcra timeout"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderITCRM() = %q, missing %q", out, want)
+		}
+	}
+	if strings.Contains(out, "desactualizado") {
+		t.Error("renderITCRM() claims stale data although none was ever fetched")
+	}
+}
+
+func TestViewITCRMStaleKeepsValueWithErrorAndTimestamp(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{itcrm: okITCRM(), fetchedAt: staleAt})
+	m = updated.(Model)
+	updated, _ = m.Update(dataMsg{itcrmErr: errors.New("bcra timeout"), fetchedAt: time.Now()})
+	m = updated.(Model)
+
+	if !m.itcrmAt.Equal(staleAt) {
+		t.Errorf("itcrmAt = %v, want %v untouched by the failure", m.itcrmAt, staleAt)
+	}
+	out := m.renderITCRM()
+	for _, want := range []string{"ITCRM: 85,04", "bcra timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderITCRM() = %q, missing %q", out, want)
+		}
+	}
+	if idx := strings.Index(out, "  ⚠ desactualizado"); idx <= 0 || out[idx-1] != '\n' {
+		t.Errorf("stale note does not start on its own line: %q", out)
+	}
+}
+
+func TestRefreshReportsITCRMIndependentlyAndForwardsForce(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	boom := errors.New("bcra down")
+	var gotForce bool
+	m.fetchITCRM = func(_ context.Context, force bool) (itcrm.Indicator, error) {
+		gotForce = force
+		return itcrm.Indicator{}, boom
+	}
+	msg, ok := m.refresh(true)().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() did not produce a dataMsg")
+	}
+	if !gotForce {
+		t.Error("force was not forwarded to the ITCRM fetcher")
+	}
+	if !errors.Is(msg.itcrmErr, boom) {
+		t.Errorf("itcrmErr = %v, want %v", msg.itcrmErr, boom)
+	}
+	if msg.quotesErr != nil || msg.riesgoErr != nil {
+		t.Errorf("a failing ITCRM leaked into other sources: %v / %v", msg.quotesErr, msg.riesgoErr)
+	}
+
+	msg, _ = newTestModel(okQuotes, okRiesgo).refresh(false)().(dataMsg)
+	if msg.itcrmErr != nil || msg.itcrm.Value != okITCRM().Value {
+		t.Errorf("healthy refresh = %+v / %v, want the fetched indicator", msg.itcrm, msg.itcrmErr)
+	}
+}
+
+func TestFooterUpdatedTimeIncludesITCRMSuccess(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{itcrm: okITCRM(), fetchedAt: staleAt})
+	if got := updated.(Model).lastSuccessAt(); !got.Equal(staleAt) {
+		t.Errorf("lastSuccessAt() = %v, want %v", got, staleAt)
 	}
 }

@@ -1,6 +1,7 @@
 // Package tui renders the macroeconomic indicator dashboard: USD/ARS quotes,
 // the Argentine country-risk index, the sovereign GD bond parity table, the US
-// Treasury par yield curve, and the Federal Reserve reference rate.
+// Treasury par yield curve, the Federal Reserve reference rate, and the BCRA
+// real exchange rate index (ITCRM).
 //
 // The model is a plain Bubbletea model with injected fetchers, so state
 // transitions can be tested by calling Update directly with messages.
@@ -19,6 +20,7 @@ import (
 	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/fed"
+	"metruchinas/internal/itcrm"
 	"metruchinas/internal/riesgo"
 	"metruchinas/internal/tesoro"
 )
@@ -57,6 +59,12 @@ type TreasuryFetcher func(ctx context.Context, force bool) (tesoro.Curve, error)
 // other cycle the cache decides whether a request is needed at all.
 type FedFetcher func(ctx context.Context, force bool) (fed.Rate, error)
 
+// ITCRMFetcher retrieves the BCRA multilateral real exchange rate index. It
+// matches itcrm.Cache.Get: force asks for a refetch instead of the cached
+// value, so `r` reaches the calendar-day cache that spares the ~3.6 MB
+// workbook download on every other cycle.
+type ITCRMFetcher func(ctx context.Context, force bool) (itcrm.Indicator, error)
+
 // dataMsg carries the outcome of one refresh cycle. Each source reports its
 // own error so a failing source never hides the other one's data.
 type dataMsg struct {
@@ -70,6 +78,8 @@ type dataMsg struct {
 	treasuryErr error
 	rate        fed.Rate
 	fedErr      error
+	itcrm       itcrm.Indicator
+	itcrmErr    error
 	fetchedAt   time.Time
 }
 
@@ -88,7 +98,9 @@ type Model struct {
 	treasuryErr error
 	rate        fed.Rate
 	fedErr      error
-	// quotesAt, riesgoAt, bondsAt, treasuryAt and fedAt are the wall-clock
+	itcrm       itcrm.Indicator
+	itcrmErr    error
+	// quotesAt, riesgoAt, bondsAt, treasuryAt, fedAt and itcrmAt are the wall-clock
 	// times of the last successful fetch per source. They power stale rendering:
 	// a failing refresh keeps the last good data on screen and says how old it
 	// is.
@@ -97,12 +109,14 @@ type Model struct {
 	bondsAt       time.Time
 	treasuryAt    time.Time
 	fedAt         time.Time
+	itcrmAt       time.Time
 	refreshing    bool
 	fetchQuotes   QuotesFetcher
 	fetchRiesgo   RiesgoFetcher
 	fetchBonds    BondsFetcher
 	fetchTreasury TreasuryFetcher
 	fetchFed      FedFetcher
+	fetchITCRM    ITCRMFetcher
 	interval      time.Duration
 	timeout       time.Duration
 	loaded        bool
@@ -121,6 +135,9 @@ func New() Model {
 	// FOMC calendar, so it is wrapped in a calendar-day cache: one request per
 	// day, whichever source refresh happens to be the first.
 	fedCache := fed.NewDailyCache(fed.NewClient().Fetch)
+	// The ITCRM series is a ~3.6 MB workbook updated once a day, so it is
+	// wrapped in a calendar-day cache like the reference rate.
+	itcrmCache := itcrm.NewDailyCache(itcrm.NewClient().Fetch)
 	return Model{
 		fetchQuotes: dc.Fetch,
 		fetchRiesgo: rc.Fetch,
@@ -129,6 +146,7 @@ func New() Model {
 		},
 		fetchTreasury: curveCache.Get,
 		fetchFed:      fedCache.Get,
+		fetchITCRM:    itcrmCache.Get,
 		interval:      DefaultRefreshInterval,
 		timeout:       fetchTimeout,
 		refreshing:    true,
@@ -201,6 +219,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rate, m.fedErr = msg.rate, nil
 			m.fedAt = msg.fetchedAt
 		}
+		if msg.itcrmErr != nil {
+			m.itcrmErr = msg.itcrmErr
+		} else {
+			m.itcrm, m.itcrmErr = msg.itcrm, nil
+			m.itcrmAt = msg.fetchedAt
+		}
 		return m, nil
 	}
 	return m, nil
@@ -264,6 +288,15 @@ func (m Model) refresh(force bool) tea.Cmd {
 		} else {
 			msg.rate = rate
 		}
+		index, err := m.fetchITCRM(ctx, force)
+		if err == nil {
+			err = timeoutErr(ctx, "itcrm", timeout)
+		}
+		if err != nil {
+			msg.itcrmErr = err
+		} else {
+			msg.itcrm = index
+		}
 		return msg
 	}
 }
@@ -288,6 +321,8 @@ func (m Model) View() string {
 	b.WriteString(sectionStyle.Render("Dólar (ARS por USD)"))
 	b.WriteString("\n")
 	b.WriteString(m.renderQuotes())
+	b.WriteString("\n")
+	b.WriteString(m.renderITCRM())
 	b.WriteString("\n\n")
 	b.WriteString(sectionStyle.Render("Riesgo país (EMBI Argentina)"))
 	b.WriteString("\n")
@@ -320,6 +355,41 @@ func (m Model) renderQuotes() string {
 		return mutedStyle.Render("  sin cotizaciones para mostrar")
 	}
 	return renderQuoteRows(rows) + renderGap(m.quotes)
+}
+
+// renderITCRM renders the one-line real exchange rate index shown under the
+// dollar quotes: "ITCRM: 85,04 (-0,13%)". Loading, unavailable and stale states
+// follow the other sections; the label stays on every state so the line is
+// identifiable on its own.
+func (m Model) renderITCRM() string {
+	label := "  " + labelStyle.Render("ITCRM:") + " "
+	if m.itcrmErr != nil {
+		if !m.itcrmAt.IsZero() {
+			return m.renderITCRMValue() + "\n" + staleNote(m.itcrmAt, m.itcrmErr)
+		}
+		return label + errorStyle.Render(fmt.Sprintf("no disponible: %v", m.itcrmErr))
+	}
+	if m.itcrmAt.IsZero() {
+		if !m.loaded {
+			return label + mutedStyle.Render("cargando…")
+		}
+		return label + mutedStyle.Render("sin datos")
+	}
+	return m.renderITCRMValue()
+}
+
+// renderITCRMValue formats the index and its daily variation. The variation
+// follows the market convention of the quotes (green up, red down): a rising
+// ITCRM means the peso appreciated in real terms.
+func (m Model) renderITCRMValue() string {
+	sign := ""
+	if m.itcrm.Variation > 0 {
+		sign = "+"
+	}
+	variation := variationStyle(m.itcrm.Variation).Render(
+		fmt.Sprintf("(%s%s%%)", sign, formatNumber(m.itcrm.Variation, 2)))
+	return "  " + labelStyle.Render("ITCRM:") + " " +
+		valueStyle.Render(formatNumber(m.itcrm.Value, 2)) + " " + variation
 }
 
 // renderGap renders the CCL/MEP gap line, starting on its own line, or
@@ -764,6 +834,9 @@ func (m Model) lastSuccessAt() time.Time {
 	}
 	if m.fedAt.After(latest) {
 		latest = m.fedAt
+	}
+	if m.itcrmAt.After(latest) {
+		latest = m.itcrmAt
 	}
 	return latest
 }
