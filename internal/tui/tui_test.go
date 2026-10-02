@@ -18,6 +18,7 @@ import (
 	"metruchinas/internal/itcrm"
 	"metruchinas/internal/riesgo"
 	"metruchinas/internal/tesoro"
+	"metruchinas/internal/uscpi"
 )
 
 func rate(v float64) *float64 { return &v }
@@ -42,6 +43,9 @@ func newTestModel(quotes QuotesFetcher, r RiesgoFetcher) Model {
 	}
 	m.fetchIPC = func(ctx context.Context, force bool) (ipc.Indicator, error) {
 		return okIPC(), nil
+	}
+	m.fetchUSCPI = func(ctx context.Context, force bool) (uscpi.Indicator, error) {
+		return okUSCPI(), nil
 	}
 	m.refreshing = false
 	return m
@@ -79,6 +83,15 @@ func okIPC() ipc.Indicator {
 		Monthly: 1.6592,
 		Year12:  33.5412,
 		YTD:     21.2955,
+	}
+}
+
+func okUSCPI() uscpi.Indicator {
+	return uscpi.Indicator{
+		Month:   time.Date(2026, 8, 1, 0, 0, 0, 0, time.Local),
+		Monthly: 0.4123,
+		Year12:  2.9371,
+		YTD:     1.8264,
 	}
 }
 
@@ -1215,14 +1228,15 @@ func TestCurveColumnsAlignAcrossEveryRow(t *testing.T) {
 func TestCurveSectionFitsInTenLines(t *testing.T) {
 	// Two columns of seven tenors keep the curve inside ten lines; a single
 	// column would push the whole dashboard out of a terminal. The tenth line is
-	// the Federal Reserve reference rate appended inside the section.
+	// the Federal Reserve reference rate appended inside the section, and the
+	// eleventh the US CPI line.
 	m := newTestModel(okQuotes, okRiesgo)
-	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), fetchedAt: staleAt})
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), uscpi: okUSCPI(), fetchedAt: staleAt})
 	m = updated.(Model)
 
 	lines := strings.Split(m.renderTreasury(), "\n")
-	if len(lines) != 10 {
-		t.Errorf("renderTreasury() returned %d lines, want 10 (header + 7 rows + spread + fed):\n%s", len(lines), m.renderTreasury())
+	if len(lines) != 11 {
+		t.Errorf("renderTreasury() returned %d lines, want 11 (header + 7 rows + spread + fed + cpi):\n%s", len(lines), m.renderTreasury())
 	}
 }
 
@@ -1927,6 +1941,123 @@ func TestRefreshReportsIPCIndependentlyAndForwardsForce(t *testing.T) {
 func TestFooterUpdatedTimeIncludesIPCSuccess(t *testing.T) {
 	m := newTestModel(okQuotes, okRiesgo)
 	updated, _ := m.Update(dataMsg{ipc: okIPC(), fetchedAt: staleAt})
+	if got := updated.(Model).lastSuccessAt(); !got.Equal(staleAt) {
+		t.Errorf("lastSuccessAt() = %v, want %v", got, staleAt)
+	}
+}
+
+func TestViewRendersUSCPILine(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{uscpi: okUSCPI(), fetchedAt: time.Now()})
+	view := updated.(Model).View()
+
+	want := "CPI EE. UU. (ago-2026): 0,4% mensual · 2,9% 12m · 1,8% acum. año"
+	if !strings.Contains(view, want) {
+		t.Errorf("View() missing the US CPI line %q, got %q", want, view)
+	}
+}
+
+func TestViewUSCPISitsInTheUSSectionRightAfterFed(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{curve: okCurve(), rate: okFed(), uscpi: okUSCPI(), fetchedAt: time.Now()})
+	view := updated.(Model).View()
+	fedAt := strings.Index(view, "Tasa FED")
+	usAt := strings.Index(view, "CPI EE. UU. (")
+	if fedAt < 0 || usAt < fedAt || strings.Contains(view[fedAt:usAt], "\n\n") {
+		t.Errorf("US CPI line is not directly after the Fed line: %q", view)
+	}
+	if ipcAt := strings.Index(view, "IPC ("); ipcAt >= 0 && usAt < ipcAt {
+		t.Errorf("US CPI line is still among the Argentine indicators: %q", view)
+	}
+}
+
+func TestViewUSCPIUsesNeutralStyleForAnyValue(t *testing.T) {
+	for name, monthly := range map[string]float64{"rising": 0.9, "falling": -0.2} {
+		t.Run(name, func(t *testing.T) {
+			m := newTestModel(okQuotes, okRiesgo)
+			ind := okUSCPI()
+			ind.Monthly = monthly
+			updated, _ := m.Update(dataMsg{uscpi: ind, fetchedAt: time.Now()})
+			out := updated.(Model).renderUSCPI()
+			text := formatNumber(monthly, 1) + "%"
+			if !strings.Contains(out, valueStyle.Render(text)) {
+				t.Errorf("renderUSCPI() = %q, want %q in the neutral value style", out, text)
+			}
+		})
+	}
+}
+
+func TestViewUSCPILoadingBeforeFirstData(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	out := m.renderUSCPI()
+	for _, want := range []string{"CPI EE. UU.", "cargando"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderUSCPI() = %q, missing %q", out, want)
+		}
+	}
+}
+
+func TestViewUSCPIErrorWithoutDataShowsUnavailable(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{uscpiErr: errors.New("fred timeout"), fetchedAt: time.Now()})
+	out := updated.(Model).renderUSCPI()
+	for _, want := range []string{"CPI EE. UU.", "no disponible", "fred timeout"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderUSCPI() = %q, missing %q", out, want)
+		}
+	}
+	if strings.Contains(out, "desactualizado") {
+		t.Error("renderUSCPI() claims stale data although none was ever fetched")
+	}
+}
+
+func TestViewUSCPIStaleKeepsValueWithErrorAndTimestamp(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{uscpi: okUSCPI(), fetchedAt: staleAt})
+	updated, _ = updated.(Model).Update(dataMsg{uscpiErr: errors.New("fred timeout"), fetchedAt: time.Now()})
+	m = updated.(Model)
+	if !m.uscpiAt.Equal(staleAt) {
+		t.Errorf("uscpiAt = %v, want %v untouched by the failure", m.uscpiAt, staleAt)
+	}
+	out := m.renderUSCPI()
+	for _, want := range []string{"CPI EE. UU. (ago-2026): 0,4% mensual", "fred timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderUSCPI() = %q, missing %q", out, want)
+		}
+	}
+}
+
+func TestRefreshReportsUSCPIIndependentlyAndForwardsForce(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	boom := errors.New("fred down")
+	var gotForce bool
+	m.fetchUSCPI = func(_ context.Context, force bool) (uscpi.Indicator, error) {
+		gotForce = force
+		return uscpi.Indicator{}, boom
+	}
+	msg, ok := m.refresh(true)().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() did not produce a dataMsg")
+	}
+	if !gotForce {
+		t.Error("force was not forwarded to the US CPI fetcher")
+	}
+	if !errors.Is(msg.uscpiErr, boom) {
+		t.Errorf("uscpiErr = %v, want %v", msg.uscpiErr, boom)
+	}
+	if msg.quotesErr != nil || msg.ipcErr != nil {
+		t.Errorf("a failing US CPI leaked into other sources: %v / %v", msg.quotesErr, msg.ipcErr)
+	}
+
+	msg, _ = newTestModel(okQuotes, okRiesgo).refresh(false)().(dataMsg)
+	if msg.uscpiErr != nil || msg.uscpi.Monthly != okUSCPI().Monthly {
+		t.Errorf("healthy refresh = %+v / %v, want the fetched indicator", msg.uscpi, msg.uscpiErr)
+	}
+}
+
+func TestFooterUpdatedTimeIncludesUSCPISuccess(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{uscpi: okUSCPI(), fetchedAt: staleAt})
 	if got := updated.(Model).lastSuccessAt(); !got.Equal(staleAt) {
 		t.Errorf("lastSuccessAt() = %v, want %v", got, staleAt)
 	}
