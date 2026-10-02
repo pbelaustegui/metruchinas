@@ -329,8 +329,12 @@ func renderGap(quotes []dolar.Quote) string {
 	if !ok {
 		return ""
 	}
+	style := gainStyle
+	if gap < 0 {
+		style = lossStyle
+	}
 	return "\n  " + labelStyle.Render(padRight("Brecha CCL/MEP", 26)) +
-		rateStyle.Render(formatNumber(gap, 2)+"%")
+		style.Render(formatNumber(gap, 2)+"%")
 }
 
 // renderQuoteRows formats one quote per line: house name and buy/sell rates.
