@@ -1,6 +1,6 @@
 # metruchinas
 
-Market indicators in your terminal: USD/ARS quotes, the Argentine country-risk index, sovereign GD bond parities, the US Treasury par yield curve, and the Federal Reserve reference rate, refreshed live from public APIs.
+Market indicators in your terminal: USD/ARS quotes, the Argentine country-risk index, sovereign GD bond parities, the US Treasury par yield curve, the Federal Reserve reference rate, the BCRA multilateral real exchange rate (ITCRM), and Argentina's CPI (IPC), refreshed live from public APIs.
 
 ## What it shows
 
@@ -15,6 +15,8 @@ Market indicators in your terminal: USD/ARS quotes, the Argentine country-risk i
 | Bonos soberanos GD (paridad) | GD29, GD30, GD35, GD38, GD41, GD46 with parity %, technical value, and USD price via CCL conversion | [compararfondos.com.ar](https://compararfondos.com.ar) |
 | Curva del Tesoro EE. UU. | 14 tenors (1M to 30Y) with level, daily change in basis points, publication date, and the 10Y-2Y spread | [home.treasury.gov](https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve) |
 | Tasa FED | FOMC target range, effective federal funds rate (EFFR) with its daily change in basis points, and the EFFR observation date | [fred.stlouisfed.org](https://fred.stlouisfed.org/) |
+| ITCRM | Multilateral real exchange rate index (base 17-12-15 = 100) with its daily variation, shown under the dollar quotes | [bcra.gob.ar](https://www.bcra.gob.ar/indices-de-tipo-de-cambio-multilateral/) (official XLSX) |
+| IPC | National CPI: last monthly variation, last 12 months, and year-to-date accumulated, derived from the index level | INDEC via [apis.datos.gob.ar](https://apis.datos.gob.ar/series/) |
 
 All sources are public and need no API key.
 
@@ -24,7 +26,7 @@ All sources are public and need no API key.
 go run .
 ```
 
-Expected result: an alternate-screen dashboard with the four USD rates, the country-risk index, the GD bond table, the US Treasury curve with the FOMC target range and EFFR underneath, and the reference rate's observation date. It refetches every source every 30 seconds (the curve and the Fed rate are served from their own caches, see below); `q` quits.
+Expected result: an alternate-screen dashboard with the four USD rates, the country-risk index, the GD bond table, the ITCRM and IPC lines under the dollar quotes, the US Treasury curve with the FOMC target range and EFFR underneath, and the reference rate's observation date. It refetches every source every 30 seconds (the curve and the Fed rate are served from their own caches, see below); `q` quits.
 
 ```bash
 # on-demand checks
@@ -48,6 +50,8 @@ go test -tags=integration ./internal/tui -run TestLiveSourcesFetchRealData -v
 - **Partial failures never blank the dashboard.** Each source reports its own error; if Ámbito is down, the USD rates stay on screen (and vice versa) with a red message in the failing section.
 - **The Treasury curve is fetched once per business day.** Treasury releases roughly once per business day, Monday to Friday, at 16:00 New York time, so the dashboard asks the endpoint once per publication cycle and answers every other refresh from memory; `r` forces a refetch. The schedule follows the business week: a Friday evening, a Saturday and a Sunday all wait for Monday's release, so a session running from Friday 15:00 to Monday 09:00 makes one request. Two bounded exceptions qualify the once-per-day claim. If the newest row we hold is still older than the current business day after the release hour, the cache retries every 15 minutes until local midnight instead of waiting a whole day and instead of looping all night; holidays are not known to the schedule, so a weekday holiday looks like a late release and costs one evening of retries. If the source fails, the retry interval doubles on each consecutive failure (5, 10, 20, then a 30-minute ceiling) and the first success resets it, so a long outage costs at most two requests per hour instead of 288, and the section can stay on the last good curve for up to 30 minutes after the source recovers — `r` forces an immediate check.
 - **The Fed reference rate is fetched once per calendar day.** The FOMC target range (`DFEDTARL`/`DFEDTARU`) and the effective federal funds rate (`DFF`) come from FRED as three single-series CSV requests bounded to the last 30 days; `r` forces a refetch. Unlike the Treasury curve there is no publication calendar to follow, so the cache refreshes on the local calendar day alone — a session running across a weekend keeps showing the same values until FRED publishes a change. The failure backoff is the same ladder (5, 10, 20, then a 30-minute ceiling, reset on success).
+- **ITCRM and IPC are fetched once per calendar day.** Both change at most once a day (the IPC once a month), so the cache refreshes on the local calendar day alone and `r` forces a refetch; the failure backoff is the same ladder as the Fed rate (5, 10, 20, then a 30-minute ceiling, reset on success). The ITCRM is parsed from the BCRA's official XLSX with the standard library (`archive/zip` + `encoding/xml`): column A is the Excel date serial, column B the index, and the last two complete rows give the level and the daily variation.
+- **IPC variations are derived from the index level, and a gap is an error.** The series publishes levels, not percentages: monthly = level / previous month, 12 months = level / same month last year, year-to-date = level / previous December. The parser requires 13 consecutive months, so a missing month or an unusable level fails the whole indicator instead of computing a wrong rate. The figures use a neutral style because a CPI rise is not a gain or a loss the way a market move is.
 - **A missing FRED cell is never zero.** The series are forward-filled daily and the last one or two rows can be empty while a value is unpublished, so the dashboard reads the last non-empty row of each series and derives the EFFR change from the previous non-empty one.
 - **Curve columns are resolved by header name, never by position.** Treasury inserts and retires tenor columns (`1.5 Month` was inserted between `1 Mo` and `2 Mo`), so a parser reading by position would silently report one tenor's yield as another's. A tenor that is missing, retired, or blank keeps its slot and renders as `—`; a header that no longer carries any tracked tenor column is reported as an error instead, so the section can never degrade into fourteen dashes behind a valid-looking date.
 - **Curve changes are basis points against the previous business day.** The payload carries no variation field: the change is derived from the row above. Rising yields render red and falling yields green, and the 10Y-2Y spread is flagged as `curva invertida` when it turns negative.
@@ -70,15 +74,19 @@ go test -tags=integration ./internal/tui -run TestLiveSourcesFetchRealData -v
 | `internal/bonos` | compararfondos.com.ar bond client (single-request payload, USD quotes) + parity math |
 | `internal/tesoro` | home.treasury.gov yield-curve client (header-name column mapping, previous-business-day changes) + publication cache |
 | `internal/fed` | fred.stlouisfed.org reference-rate client (three `cosd`-bounded single-series fetches, last-non-empty parsing) + calendar-day cache |
+| `internal/itcrm` | BCRA ITCRM client (official XLSX parsed with the standard library, daily variation) + calendar-day cache |
+| `internal/ipc` | INDEC CPI client via datos.gob.ar (index levels, monthly / 12-month / year-to-date variations) + calendar-day cache |
 | `internal/tui` | Dashboard model, view, and refresh pipeline |
 | `odd/tasks/macro-tui.md` | macro-tui feature plan of record and verification evidence |
 | `odd/tasks/bond-source-swap.md` | bond-source-swap feature plan of record |
 | `odd/tasks/us-treasury-curve.md` | us-treasury-curve feature plan of record and verification evidence |
 | `odd/tasks/fed-rate.md` | fed-rate feature plan of record and verification evidence |
+| `odd/tasks/itcrm.md` | itcrm feature plan of record and verification evidence |
+| `odd/tasks/ipc.md` | ipc feature plan of record and verification evidence |
 
 ## Notes and limits
 
-- Data comes from third-party public endpoints, not official BCRA feeds. Treat it as reference, not as financial advice.
+- Most data comes from third-party public endpoints; only the ITCRM comes from an official BCRA file and the IPC from INDEC through datos.gob.ar. Treat it as reference, not as financial advice.
 - Requires Go 1.27+ and internet access. Wall-clock refresh is 30 s; source update frequency is set by each provider.
-- The dashboard renders about 31 lines (four sections, six bonds, fourteen curve tenors). A terminal shorter than that scrolls.
+- The dashboard renders about 33 lines (four sections, six bonds, fourteen curve tenors). A terminal shorter than that scrolls.
 - The dashboard labels use the domain's Spanish names (`Riesgo país`, `Contado con liquidación`) because they mirror the API display names and the target audience.
