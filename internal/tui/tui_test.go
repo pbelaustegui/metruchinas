@@ -14,6 +14,7 @@ import (
 	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/fed"
+	"metruchinas/internal/ipc"
 	"metruchinas/internal/itcrm"
 	"metruchinas/internal/riesgo"
 	"metruchinas/internal/tesoro"
@@ -38,6 +39,9 @@ func newTestModel(quotes QuotesFetcher, r RiesgoFetcher) Model {
 	}
 	m.fetchITCRM = func(ctx context.Context, force bool) (itcrm.Indicator, error) {
 		return okITCRM(), nil
+	}
+	m.fetchIPC = func(ctx context.Context, force bool) (ipc.Indicator, error) {
+		return okIPC(), nil
 	}
 	m.refreshing = false
 	return m
@@ -66,6 +70,15 @@ func okITCRM() itcrm.Indicator {
 		Value:     85.03505937989866,
 		Variation: -0.1307801692349453,
 		Date:      time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
+	}
+}
+
+func okIPC() ipc.Indicator {
+	return ipc.Indicator{
+		Month:   time.Date(2026, 8, 1, 0, 0, 0, 0, time.Local),
+		Monthly: 1.6592,
+		Year12:  33.5412,
+		YTD:     21.2955,
 	}
 }
 
@@ -1785,6 +1798,135 @@ func TestRefreshReportsITCRMIndependentlyAndForwardsForce(t *testing.T) {
 func TestFooterUpdatedTimeIncludesITCRMSuccess(t *testing.T) {
 	m := newTestModel(okQuotes, okRiesgo)
 	updated, _ := m.Update(dataMsg{itcrm: okITCRM(), fetchedAt: staleAt})
+	if got := updated.(Model).lastSuccessAt(); !got.Equal(staleAt) {
+		t.Errorf("lastSuccessAt() = %v, want %v", got, staleAt)
+	}
+}
+
+func TestViewRendersIPCLine(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{ipc: okIPC(), fetchedAt: time.Now()})
+	view := updated.(Model).View()
+
+	want := "IPC (ago-2026): 1,7% mensual · 33,5% 12m · 21,3% acum. año"
+	if !strings.Contains(view, want) {
+		t.Errorf("View() missing the IPC line %q, got %q", want, view)
+	}
+}
+
+func TestViewIPCSitsRightUnderITCRM(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{itcrm: okITCRM(), ipc: okIPC(), fetchedAt: time.Now()})
+	view := updated.(Model).View()
+	itcrmAt := strings.Index(view, "ITCRM:")
+	ipcAt := strings.Index(view, "IPC (")
+	if itcrmAt < 0 || ipcAt < itcrmAt || strings.Contains(view[itcrmAt:ipcAt], "\n\n") {
+		t.Errorf("IPC line is not directly after the ITCRM line: %q", view)
+	}
+}
+
+func TestViewIPCUsesNeutralStyleForAnyValue(t *testing.T) {
+	for name, monthly := range map[string]float64{"rising": 2.5, "falling": -0.4} {
+		t.Run(name, func(t *testing.T) {
+			m := newTestModel(okQuotes, okRiesgo)
+			ind := okIPC()
+			ind.Monthly = monthly
+			updated, _ := m.Update(dataMsg{ipc: ind, fetchedAt: time.Now()})
+			out := updated.(Model).renderIPC()
+			text := formatNumber(monthly, 1) + "%"
+			if !strings.Contains(out, valueStyle.Render(text)) {
+				t.Errorf("renderIPC() = %q, want %q in the neutral value style", out, text)
+			}
+			// Rendering carries no colors without a TTY, so the neutrality is
+			// asserted on the style itself: it must not be a gain/loss color.
+			if fg := valueStyle.GetForeground(); fg == gainStyle.GetForeground() || fg == lossStyle.GetForeground() {
+				t.Errorf("valueStyle foreground %v collides with gain/loss colors", fg)
+			}
+		})
+	}
+}
+
+func TestIPCMonthLabelIsSpanishAbbreviation(t *testing.T) {
+	want := []string{"ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"}
+	for i, abbr := range want {
+		got := ipcMonthLabel(time.Date(2026, time.Month(i+1), 1, 0, 0, 0, 0, time.Local))
+		if exp := abbr + "-2026"; got != exp {
+			t.Errorf("ipcMonthLabel(month %d) = %q, want %q", i+1, got, exp)
+		}
+	}
+}
+
+func TestViewIPCLoadingBeforeFirstData(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	out := m.renderIPC()
+	for _, want := range []string{"IPC", "cargando"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderIPC() = %q, missing %q", out, want)
+		}
+	}
+}
+
+func TestViewIPCErrorWithoutDataShowsUnavailable(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{ipcErr: errors.New("indec timeout"), fetchedAt: time.Now()})
+	out := updated.(Model).renderIPC()
+	for _, want := range []string{"IPC", "no disponible", "indec timeout"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderIPC() = %q, missing %q", out, want)
+		}
+	}
+	if strings.Contains(out, "desactualizado") {
+		t.Error("renderIPC() claims stale data although none was ever fetched")
+	}
+}
+
+func TestViewIPCStaleKeepsValueWithErrorAndTimestamp(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{ipc: okIPC(), fetchedAt: staleAt})
+	updated, _ = updated.(Model).Update(dataMsg{ipcErr: errors.New("indec timeout"), fetchedAt: time.Now()})
+	m = updated.(Model)
+	if !m.ipcAt.Equal(staleAt) {
+		t.Errorf("ipcAt = %v, want %v untouched by the failure", m.ipcAt, staleAt)
+	}
+	out := m.renderIPC()
+	for _, want := range []string{"IPC (ago-2026): 1,7% mensual", "indec timeout", "10:30:00", "desactualizado"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("renderIPC() = %q, missing %q", out, want)
+		}
+	}
+}
+
+func TestRefreshReportsIPCIndependentlyAndForwardsForce(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	boom := errors.New("indec down")
+	var gotForce bool
+	m.fetchIPC = func(_ context.Context, force bool) (ipc.Indicator, error) {
+		gotForce = force
+		return ipc.Indicator{}, boom
+	}
+	msg, ok := m.refresh(true)().(dataMsg)
+	if !ok {
+		t.Fatal("refresh() did not produce a dataMsg")
+	}
+	if !gotForce {
+		t.Error("force was not forwarded to the IPC fetcher")
+	}
+	if !errors.Is(msg.ipcErr, boom) {
+		t.Errorf("ipcErr = %v, want %v", msg.ipcErr, boom)
+	}
+	if msg.quotesErr != nil || msg.itcrmErr != nil {
+		t.Errorf("a failing IPC leaked into other sources: %v / %v", msg.quotesErr, msg.itcrmErr)
+	}
+
+	msg, _ = newTestModel(okQuotes, okRiesgo).refresh(false)().(dataMsg)
+	if msg.ipcErr != nil || msg.ipc.Monthly != okIPC().Monthly {
+		t.Errorf("healthy refresh = %+v / %v, want the fetched indicator", msg.ipc, msg.ipcErr)
+	}
+}
+
+func TestFooterUpdatedTimeIncludesIPCSuccess(t *testing.T) {
+	m := newTestModel(okQuotes, okRiesgo)
+	updated, _ := m.Update(dataMsg{ipc: okIPC(), fetchedAt: staleAt})
 	if got := updated.(Model).lastSuccessAt(); !got.Equal(staleAt) {
 		t.Errorf("lastSuccessAt() = %v, want %v", got, staleAt)
 	}

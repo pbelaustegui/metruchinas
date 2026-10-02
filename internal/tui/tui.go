@@ -20,6 +20,7 @@ import (
 	"metruchinas/internal/bonos"
 	"metruchinas/internal/dolar"
 	"metruchinas/internal/fed"
+	"metruchinas/internal/ipc"
 	"metruchinas/internal/itcrm"
 	"metruchinas/internal/riesgo"
 	"metruchinas/internal/tesoro"
@@ -65,6 +66,11 @@ type FedFetcher func(ctx context.Context, force bool) (fed.Rate, error)
 // workbook download on every other cycle.
 type ITCRMFetcher func(ctx context.Context, force bool) (itcrm.Indicator, error)
 
+// IPCFetcher retrieves Argentina's consumer price index. It matches
+// ipc.Cache.Get: force asks for a refetch instead of the cached value, so `r`
+// reaches the calendar-day cache that spares a request on every other cycle.
+type IPCFetcher func(ctx context.Context, force bool) (ipc.Indicator, error)
+
 // dataMsg carries the outcome of one refresh cycle. Each source reports its
 // own error so a failing source never hides the other one's data.
 type dataMsg struct {
@@ -80,6 +86,8 @@ type dataMsg struct {
 	fedErr      error
 	itcrm       itcrm.Indicator
 	itcrmErr    error
+	ipc         ipc.Indicator
+	ipcErr      error
 	fetchedAt   time.Time
 }
 
@@ -100,7 +108,9 @@ type Model struct {
 	fedErr      error
 	itcrm       itcrm.Indicator
 	itcrmErr    error
-	// quotesAt, riesgoAt, bondsAt, treasuryAt, fedAt and itcrmAt are the wall-clock
+	ipc         ipc.Indicator
+	ipcErr      error
+	// quotesAt, riesgoAt, bondsAt, treasuryAt, fedAt, itcrmAt and ipcAt are the wall-clock
 	// times of the last successful fetch per source. They power stale rendering:
 	// a failing refresh keeps the last good data on screen and says how old it
 	// is.
@@ -110,6 +120,7 @@ type Model struct {
 	treasuryAt    time.Time
 	fedAt         time.Time
 	itcrmAt       time.Time
+	ipcAt         time.Time
 	refreshing    bool
 	fetchQuotes   QuotesFetcher
 	fetchRiesgo   RiesgoFetcher
@@ -117,6 +128,7 @@ type Model struct {
 	fetchTreasury TreasuryFetcher
 	fetchFed      FedFetcher
 	fetchITCRM    ITCRMFetcher
+	fetchIPC      IPCFetcher
 	interval      time.Duration
 	timeout       time.Duration
 	loaded        bool
@@ -138,6 +150,9 @@ func New() Model {
 	// The ITCRM series is a ~3.6 MB workbook updated once a day, so it is
 	// wrapped in a calendar-day cache like the reference rate.
 	itcrmCache := itcrm.NewDailyCache(itcrm.NewClient().Fetch)
+	// The CPI is published once a month, so it is wrapped in a calendar-day
+	// cache as well.
+	ipcCache := ipc.NewDailyCache(ipc.NewClient().Fetch)
 	return Model{
 		fetchQuotes: dc.Fetch,
 		fetchRiesgo: rc.Fetch,
@@ -147,6 +162,7 @@ func New() Model {
 		fetchTreasury: curveCache.Get,
 		fetchFed:      fedCache.Get,
 		fetchITCRM:    itcrmCache.Get,
+		fetchIPC:      ipcCache.Get,
 		interval:      DefaultRefreshInterval,
 		timeout:       fetchTimeout,
 		refreshing:    true,
@@ -225,6 +241,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.itcrm, m.itcrmErr = msg.itcrm, nil
 			m.itcrmAt = msg.fetchedAt
 		}
+		if msg.ipcErr != nil {
+			m.ipcErr = msg.ipcErr
+		} else {
+			m.ipc, m.ipcErr = msg.ipc, nil
+			m.ipcAt = msg.fetchedAt
+		}
 		return m, nil
 	}
 	return m, nil
@@ -297,6 +319,15 @@ func (m Model) refresh(force bool) tea.Cmd {
 		} else {
 			msg.itcrm = index
 		}
+		inflation, err := m.fetchIPC(ctx, force)
+		if err == nil {
+			err = timeoutErr(ctx, "ipc", timeout)
+		}
+		if err != nil {
+			msg.ipcErr = err
+		} else {
+			msg.ipc = inflation
+		}
 		return msg
 	}
 }
@@ -323,6 +354,8 @@ func (m Model) View() string {
 	b.WriteString(m.renderQuotes())
 	b.WriteString("\n")
 	b.WriteString(m.renderITCRM())
+	b.WriteString("\n")
+	b.WriteString(m.renderIPC())
 	b.WriteString("\n\n")
 	b.WriteString(sectionStyle.Render("Riesgo país (EMBI Argentina)"))
 	b.WriteString("\n")
@@ -390,6 +423,45 @@ func (m Model) renderITCRMValue() string {
 		fmt.Sprintf("(%s%s%%)", sign, formatNumber(m.itcrm.Variation, 2)))
 	return "  " + labelStyle.Render("ITCRM:") + " " +
 		valueStyle.Render(formatNumber(m.itcrm.Value, 2)) + " " + variation
+}
+
+// spanishMonths are the three-letter month abbreviations of the IPC label.
+var spanishMonths = [...]string{"ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"}
+
+// ipcMonthLabel renders a month as "ago-2026".
+func ipcMonthLabel(month time.Time) string {
+	return fmt.Sprintf("%s-%d", spanishMonths[month.Month()-1], month.Year())
+}
+
+// renderIPC renders the one-line consumer price index shown under the ITCRM
+// line: "IPC (ago-2026): 1,7% mensual · 33,5% 12m · 21,3% acum. año". Loading,
+// unavailable and stale states follow the other sections.
+func (m Model) renderIPC() string {
+	label := "  " + labelStyle.Render("IPC:") + " "
+	if m.ipcErr != nil {
+		if !m.ipcAt.IsZero() {
+			return m.renderIPCValue() + "\n" + staleNote(m.ipcAt, m.ipcErr)
+		}
+		return label + errorStyle.Render(fmt.Sprintf("no disponible: %v", m.ipcErr))
+	}
+	if m.ipcAt.IsZero() {
+		if !m.loaded {
+			return label + mutedStyle.Render("cargando…")
+		}
+		return label + mutedStyle.Render("sin datos")
+	}
+	return m.renderIPCValue()
+}
+
+// renderIPCValue formats the three variations in the neutral value style:
+// unlike a quote, a rising price index is not good news, so no gain/loss
+// coloring applies.
+func (m Model) renderIPCValue() string {
+	sep := mutedStyle.Render(" · ")
+	return "  " + labelStyle.Render(fmt.Sprintf("IPC (%s):", ipcMonthLabel(m.ipc.Month))) + " " +
+		valueStyle.Render(formatNumber(m.ipc.Monthly, 1)+"%") + " mensual" + sep +
+		valueStyle.Render(formatNumber(m.ipc.Year12, 1)+"%") + " 12m" + sep +
+		valueStyle.Render(formatNumber(m.ipc.YTD, 1)+"%") + " acum. año"
 }
 
 // renderGap renders the CCL/MEP gap line, starting on its own line, or
@@ -837,6 +909,9 @@ func (m Model) lastSuccessAt() time.Time {
 	}
 	if m.itcrmAt.After(latest) {
 		latest = m.itcrmAt
+	}
+	if m.ipcAt.After(latest) {
+		latest = m.ipcAt
 	}
 	return latest
 }
